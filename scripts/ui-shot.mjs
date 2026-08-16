@@ -1,0 +1,10 @@
+import { chromium } from 'playwright-core'
+const browser = await chromium.launch({ executablePath: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', headless: true })
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+await page.goto('http://127.0.0.1:3080', { waitUntil: 'networkidle', timeout: 30000 })
+await page.waitForTimeout(3500)
+await page.getByText('月芒霜鳍鲸', { exact: true }).last().click().catch(() => {})
+await page.waitForTimeout(2500)
+await page.screenshot({ path: '/tmp/dsh-clean.png' })
+await browser.close()
+console.log('ok')

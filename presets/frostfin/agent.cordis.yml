@@ -1,0 +1,7 @@
+# 月芒霜鳍鲸 preset：frostfin 分发器把选了这个 preset 的会话路由给 kimi 驱动。
+# DSH 侧的工具与提示词不参与（kimi 使用自己的工具箱与提示词）；
+# 花名册拒绝空组合文件，所以保留一个最小的 persona 行。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: 此会话由本机 Kimi Code 驱动（frostfin loop 插件）。

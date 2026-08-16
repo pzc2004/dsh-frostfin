@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.tgz
+
+# 本地参考仓库（reference/deepseek-harness、kimi-code、kimi-tide），不进版本库
+reference/
+
+.DS_Store

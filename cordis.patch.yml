@@ -1,0 +1,21 @@
+# frostfin 配置层：向 profile 插入 frostfin 插件行。
+#
+# frostfin 通过 ctx.agents.setFactory 占住 loop 插槽（全局唯一，重复注册会抛错），
+# 因此必须同时禁用 agent-loop 行。
+
+- insert:
+    - id: frostfin
+      name: dsh-frostfin
+      config:
+        command: kimi
+        args: ['acp']
+        permission: ask
+
+# 把「月芒霜鳍鲸」设为默认模式：未主动选模式的会话也由 kimi 驱动（显示与驱动一致）。
+# 想回原生就在新建会话时选「标准模式」。
+- id: agent-presets
+  config:
+    default: frostfin
+
+- id: agent-loop
+  disabled: true
