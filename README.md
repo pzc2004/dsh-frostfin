@@ -13,7 +13,7 @@
 frostfin 是一个 DSH loop 插件：把 DSH 会话的驱动者整个换成 **Kimi Code 本人**——通过 ACP（Agent Client Protocol）直连，中间没有第二个 agent 转述。于是你同时拿到两样原本互斥的东西：
 
 - **Kimi 侧**：Kimi Code 原装的 agent loop——为 kimi-for-coding 系列模型调优过的规划、工具编排与 thinking 模式，一个组件都不替换，版本照升；
-- **DSH 侧**：DSH 的全部生态——Web UI、主题皮肤、会话管理、审批体系、数百个社区插件，以及"一切皆插件、插件皆可逆"的 Cordis 底座。
+- **DSH 侧**：DSH 的全部生态——Web UI、主题皮肤、会话管理、轨迹查看、社区插件，以及"一切皆插件、插件皆可逆"的 Cordis 底座。
 
 两边的长处，一头的项目。
 
@@ -165,4 +165,4 @@ npx @deepseek-ai/dsh web
 
 ## License
 
-[MIT](LICENSE)
+代码以 [MIT](LICENSE) 发布。`assets/` 与本文档中的《原神》相关素材（图鉴形象、地图与区域照片；logo 为基于游戏形象的二次创作）版权归米哈游 / HoYoverse 所有，仅作命名由来示意，不在 MIT 覆盖范围内。

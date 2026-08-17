@@ -13,7 +13,7 @@ English | [中文](README.md)
 frostfin is a DSH loop plugin: it replaces the driver of a DSH session wholesale with **Kimi Code itself** — connected directly over ACP (Agent Client Protocol), with no second agent paraphrasing in between. You get two things that used to be mutually exclusive:
 
 - **From Kimi**: Kimi Code's own agent loop — planning, tool orchestration and thinking modes tuned for the kimi-for-coding model family. Not a single component is replaced, and upgrades ride along;
-- **From DSH**: the entire ecosystem — Web UI, themes, session management, the approval system, hundreds of community plugins, and the Cordis substrate where "everything is a plugin, and every plugin is revertible".
+- **From DSH**: the entire ecosystem — Web UI, themes, session management, trajectory view, community plugins, and the Cordis substrate where "everything is a plugin, and every plugin is revertible".
 
 The strengths of both, in one project.
 
@@ -163,4 +163,4 @@ Usable but early. Quality baseline: 58 automated tests (pure translation unit te
 
 ## License
 
-[MIT](LICENSE)
+The code is released under [MIT](LICENSE). The Genshin Impact-related artwork in `assets/` and in this document (bestiary images, map and region photos; the logo is a derivative work based on the in-game creature design) is © miHoYo / HoYoverse, shown only to illustrate the name's origin, and is NOT covered by the MIT license.
