@@ -25,7 +25,7 @@ import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import type { KimiSessionMap } from './kimi-sessions.js'
 import type { QuestionRegistry } from './question.js'
 import { startAcpProcess } from './acp-process.js'
-import { buildRemoteArgv, checkRemoteHost, remoteTargetOf, sanitizeSessionName } from './remote.js'
+import { remoteTargetOf, remoteTransport, sanitizeSessionName } from './remote.js'
 import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import type { Config } from './index.js'
 
@@ -387,7 +387,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
   const listRemote = async (host: SshHostEntry): Promise<{ sessions: RemoteSessionItem[]; error?: string; homeDir?: string }> => {
     const cached = remoteListCache.get(host.alias)
     if (cached !== undefined && Date.now() - cached.at < 15_000) return cached.payload
-    const health = await checkRemoteHost(host, config.sshCommand)
+    const health = await remoteTransport.check(host, config.sshCommand)
     if (!health.ok) {
       // 失败不缓存——用户在服务器装好 tmux/kimi 后，下一次点击即应重试。
       return { sessions: [], error: health.detail }
@@ -397,7 +397,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
       const probeSession = sanitizeSessionName(`frostfin-v2-probe-${host.alias}-${randomUUID().slice(0, 8)}`)
       // 只在 command 是默认裸名 'kimi' 时用解析出的绝对路径（显式自定义优先）。
       const kimiCommand = health.kimiPath !== undefined && config.command === 'kimi' ? health.kimiPath : config.command
-      const argv = buildRemoteArgv(host, probeSession, `${kimiCommand} ${config.args.join(' ')}`, config.sshCommand)
+      const argv = remoteTransport.buildArgv(host, probeSession, `${kimiCommand} ${config.args.join(' ')}`, config.sshCommand)
       const proc = await startAcpProcess({
         command: argv[0]!,
         args: argv.slice(1),

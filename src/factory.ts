@@ -24,7 +24,7 @@ import type { KimiSessionMap, KimiSessionPrefs } from './kimi-sessions.js'
 import type { KimiModelCatalog } from './kimi-route.js'
 import { createPermissionBridge } from './permission.js'
 import type { QuestionRegistry } from './question.js'
-import { buildRemoteArgv, checkRemoteHost, sanitizeSessionName } from './remote.js'
+import { remoteTransport, sanitizeSessionName } from './remote.js'
 import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import { frostfinRouteSeed } from './kimi-route.js'
@@ -119,7 +119,7 @@ export class FrostfinAgentFactory implements AgentFactory {
    */
   private async checkRemoteCached(host: SshHostEntry): Promise<string | undefined> {
     if (!this.remoteHealth.has(host.alias)) {
-      const health = await checkRemoteHost(host, this.config.sshCommand)
+      const health = await remoteTransport.check(host, this.config.sshCommand)
       if (!health.ok) throw new Error(`frostfin: ${health.detail}`)
       this.remoteHealth.set(host.alias, health.kimiPath)
     }
@@ -235,7 +235,7 @@ export class FrostfinAgentFactory implements AgentFactory {
       // 只在 command 是默认裸名 'kimi' 时用解析出的绝对路径（显式自定义的命令优先——
       // 测试拿它指向夹具）。
       const kimiCommand = kimiPath !== undefined && this.config.command === 'kimi' ? kimiPath : this.config.command
-      const argv = buildRemoteArgv(remote, sanitizeSessionName(`frostfin-v2-${agent.id}`), `${kimiCommand} ${this.config.args.join(' ')}`, this.config.sshCommand)
+      const argv = remoteTransport.buildArgv(remote, sanitizeSessionName(`frostfin-v2-${agent.id}`), `${kimiCommand} ${this.config.args.join(' ')}`, this.config.sshCommand)
       command = argv[0]!
       args = argv.slice(1)
     }

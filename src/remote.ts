@@ -9,6 +9,8 @@
  * - shim 作为单个 argv 元素经 ssh 逐字传递（无 shell 拼接，内容不受引号限制）。
  *
  * 纪律：本模块只处理"怎么连"，不内置任何真实主机信息。
+ * 调用方一律经末尾的 `remoteTransport` 分派点（RemoteTransport 接口）——
+ * POSIX（ssh+tmux）是当前唯一实现，Windows 等非 POSIX 传输将来在此分派。
  *
  * @module dsh-frostfin/remote
  */
@@ -152,3 +154,30 @@ export function checkRemoteHost(host: SshHostEntry, sshBin = 'ssh'): Promise<Rem
     })
   })
 }
+
+/**
+ * 远程传输接口：把"连一台远程主机"抽象成两个动作——体检与构建 spawn argv。
+ * 立约给未来的非 POSIX 传输（Windows 主机没有 tmux/sh/fifo 这套构件）；
+ * 纪律是先立约——没有测试的第二实现不写。
+ */
+export interface RemoteTransport {
+  /** 传输名（日志与错误信息用）。 */
+  readonly name: string
+  /** 体检一台主机（认证 → 构件在场 → kimi 路径解析）。 */
+  check(host: SshHostEntry, sshBin?: string): Promise<RemoteHealth>
+  /** 构建承载远程会话的本地 spawn argv。 */
+  buildArgv(host: SshHostEntry, sessionName: string, kimiCmd: string, sshBin?: string): string[]
+}
+
+/** POSIX 传输（当前唯一实现）：ssh 承载、tmux 养 pane、fifo 中继、sh 做 shim。 */
+export const posixSshTmux: RemoteTransport = {
+  name: 'posix-ssh-tmux',
+  check: (host, sshBin) => checkRemoteHost(host, sshBin),
+  buildArgv: (host, sessionName, kimiCmd, sshBin) => buildRemoteArgv(host, sessionName, kimiCmd, sshBin),
+}
+
+/**
+ * 平台分派点：插件内所有远程调用只经此对象，不直接碰具体实现。
+ * 将来按主机平台挑传输（如 Windows）时只改这一个常量。
+ */
+export const remoteTransport: RemoteTransport = posixSshTmux

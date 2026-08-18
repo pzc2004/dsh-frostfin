@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { buildRemoteArgv, buildShimCommand, checkRemoteHost, remoteTargetOf, sanitizeSessionName } from '../lib/remote.js'
+import { buildRemoteArgv, buildShimCommand, checkRemoteHost, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
 import { startAcpProcess } from '../lib/acp-process.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { bootPlugin, FIXTURE, localSpawn, mockGet, mockPost, mockResponse } from './helpers.mjs'
@@ -51,6 +51,13 @@ test('remoteTargetOf / buildRemoteArgv：目标串与参数顺序', () => {
   assert.ok(argv.includes('BatchMode=yes'))
   assert.equal(argv.at(-2), 'spiker@spike.internal.example.com')
   assert.equal(argv.at(-1), buildShimCommand('s1', 'kimi acp'))
+})
+
+test('remoteTransport 分派点：当前唯一实现是 posixSshTmux，且委托等价', () => {
+  assert.equal(remoteTransport, posixSshTmux)
+  assert.equal(remoteTransport.name, 'posix-ssh-tmux')
+  // 委托等价：经分派点与直调具体函数产出一致（缺省 sshBin 走默认 'ssh'）
+  assert.deepEqual(remoteTransport.buildArgv(HOST, 's1', 'kimi acp'), buildRemoteArgv(HOST, 's1', 'kimi acp'))
 })
 
 /** 造一个假 ssh 可执行（记录参数、按剧本输出/退出码）。 */
