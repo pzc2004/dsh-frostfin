@@ -43,7 +43,7 @@ pnpm test           # node --test test/*.test.mjs
 
 **重要**：测试直接 import `../lib/*.js`（构建产物），改完 `src/` 必须先 `pnpm build` 再 `pnpm test`，否则测的是旧代码。
 
-最近一次验证：`pnpm build` 通过，`pnpm test` 71 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
+最近一次验证：`pnpm build` 通过，`pnpm test` 74 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
 
 ## 目录结构与模块划分
 
@@ -64,7 +64,7 @@ src/                  宿主半身（Node 侧，tsc 编译到 lib/）
   shadow-native.ts    影子挂载原生 agent-loop（cordis isolate + Proxy 捕获其工厂，供 preset 分发委托）
   host-scope.ts       从宿主进程模块树解析 dsh-* 包（模块私有 Symbol 必须与宿主同一份）
   panel.ts            webServer HTTP 端点：/plugins/frostfin/*（会话列表/打开/状态条/提问/远程主机）
-  remote.ts           远程线：ssh+tmux shim 命令构建与远程体检（kimi 养在远程 tmux，断线不死）
+  remote.ts           远程线：ssh+tmux shim 命令构建与远程体检（kimi 养在远程 tmux，断线不死）+ RemoteTransport 传输接口（remoteTransport 分派点，POSIX 唯一实现）
   ssh-config.ts       ~/.ssh/config 解析（OpenSSH/VS Code 语义：Host 块、Include、first-obtained-wins）
 src/client/           浏览器半身（React TSX，esbuild 打包；tsc 排除此目录）
   index.ts            槽位注册：会话面板 tab、状态条 dock、提问模态框
@@ -88,7 +88,7 @@ assets/               图片素材（含《原神》版权素材，不在 MIT �
 - **进程自愈**：kimi 进程崩溃后，下一个 prompt 自动重连（重 spawn + `session/load` 吞回放）。远程会话经 ssh+tmux 复挂活 pane。
 - **preset 分发**：`shadow-native.ts` 在 cordis isolate 里挂原生 agent-loop 并**捕获**其工厂（不占工厂位）；「月芒霜鳍鲸」preset 的会话走 kimi，其他 preset 委托原生 loop，互不干扰。会话创建后驱动方锁定，不静默换脑。
 - **关停阶梯**（照抄 DSH subagent-acp）：stdin EOF → 等 `disposeEofGraceMs` → SIGTERM → 等 `disposeGraceMs` → SIGKILL → 整树退出证明。
-- **面板端点**（`src/panel.ts`，webServer 服务缺失的 headless 宿主自动跳过）：`GET kimi-sessions`、`POST open`、`GET status`、`GET/POST pending-questions/answer-question`、`GET remote-hosts`、`GET remote-sessions`、`POST open-remote`、`POST new-remote`、`GET logo.png`。
+- **面板端点**（`src/panel.ts`，webServer 服务缺失的 headless 宿主自动跳过）：`GET kimi-sessions`、`POST open`、`GET status`、`GET/POST pending-questions/answer-question`、`GET remote-hosts`、`GET remote-sessions`、`POST open-remote`、`POST new-remote`、`POST update-kimi`、`GET kimi-version`、`GET logo.png`。
 - **运行时数据**：`~/.frostfin/`（kimi-sessions.json 绑定映射、kimi-session-prefs.json 档位记忆、model-catalog.json 模型缓存）——卸载插件时刻意保留，重装可续。
 
 ## 开发约定（代码风格）
