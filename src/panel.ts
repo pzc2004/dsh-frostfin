@@ -45,6 +45,8 @@ export interface RemoteSessionItem {
   title: string | null
   cwd: string
   updatedAt: string | null
+  /** 疑似被活 TUI 持有（同工作区有前台 kimi 在 tmux 里跑）——面板接入前要用户确认。 */
+  held?: boolean
 }
 
 /** kimi 数据目录（$KIMI_CODE_HOME 或 ~/.kimi-code）。 */
@@ -413,13 +415,20 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
       })
       try {
         const sessions = await proc.listSessions()
+        // 双写防护提示：同工作区有活 kimi（tmux 前台）的会话打 held 标记，
+        // 面板接入前弹确认——两个进程共写一份会话记录会交错分叉。
+        const liveCwds = await remoteTransport.probeLiveCwds(host, config.sshCommand)
         const payload = {
-          sessions: sessions.map(session => ({
-            sessionId: session.sessionId,
-            title: session.title ?? null,
-            cwd: session.cwd,
-            updatedAt: session.updatedAt ?? null,
-          })),
+          sessions: sessions
+            // 探针自己的握手会话（无标题、即弃即删）不进列表——不然每次连接都闪现一条垃圾。
+            .filter(session => session.sessionId !== proc.sessionId)
+            .map(session => ({
+              sessionId: session.sessionId,
+              title: session.title ?? null,
+              cwd: session.cwd,
+              updatedAt: session.updatedAt ?? null,
+              ...liveCwds.includes(session.cwd) ? { held: true as const } : {},
+            })),
           // 远程 home 给「新建会话」当默认工作区。
           ...health.homeDir === undefined ? {} : { homeDir: health.homeDir },
         }
@@ -541,6 +550,83 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
+  /**
+   * 删除 kimi 会话（本地/远程共用）：起一个一次性 kimi acp 探针执行 session/delete，
+   * 自删握手会话后收尸；远程探针 pane 用完即杀。不删已绑定 DSH 的会话（面板侧拦，
+   * 这里只执行）。kimi 太旧不支持 session/delete 时给 409 + 人话指引。
+   */
+  const disposeDeleteSession = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/delete-session',
+    handler: async (req, res) => {
+      try {
+        const body = await readBody(req) as { host?: unknown; kimiSessionId?: unknown }
+        const kimiSessionId = typeof body.kimiSessionId === 'string' ? body.kimiSessionId : ''
+        if (kimiSessionId === '') {
+          send(res, 400, { error: '缺 kimiSessionId' })
+          return
+        }
+        const alias = typeof body.host === 'string' && body.host !== '' ? body.host : undefined
+        const host = alias === undefined
+          ? undefined
+          : loadSshHosts(config.sshConfigFile).find(candidate => candidate.alias === alias)
+        if (alias !== undefined && host === undefined) {
+          send(res, 404, { error: `ssh 配置里找不到主机 "${alias}"` })
+          return
+        }
+
+        // 组装探针 spawn：远程走 ssh+tmux shim（体检解析 kimi 绝对路径），本地直起。
+        let command = config.command
+        let args = config.args
+        let sessionCwd = homedir()
+        let probeSession: string | undefined
+        if (host !== undefined) {
+          const health = await remoteTransport.check(host, config.sshCommand)
+          if (!health.ok) {
+            send(res, 502, { error: health.detail })
+            return
+          }
+          const kimiCommand = health.kimiPath !== undefined && config.command === 'kimi' ? health.kimiPath : config.command
+          probeSession = sanitizeSessionName(`frostfin-v2-probe-${host.alias}-${randomUUID().slice(0, 8)}`)
+          const argv = remoteTransport.buildArgv(host, probeSession, `${kimiCommand} ${config.args.join(' ')}`, config.sshCommand)
+          command = argv[0]!
+          args = argv.slice(1)
+          sessionCwd = health.homeDir ?? '/tmp'
+        }
+        const proc = await startAcpProcess({
+          command,
+          args,
+          cwd: process.cwd(),
+          sessionCwd,
+          permission: 'allow',
+          disposeEofGraceMs: config.disposeEofGraceMs,
+          disposeGraceMs: config.disposeGraceMs,
+          spawn: spec => ctx.subprocess.spawn(spec),
+          onSessionUpdate: () => {},
+        })
+        try {
+          const deleted = await proc.deleteSessionById(kimiSessionId)
+          if (!deleted) {
+            send(res, 409, { error: 'kimi 拒绝了删除（会话可能已不存在；若 kimi 版本太旧不支持 session/delete，先点「更新 kimi」）' })
+            return
+          }
+          logger.info('frostfin: 面板删除 kimi 会话 %s（%s）', kimiSessionId, host === undefined ? '本地' : host.alias)
+          // 远程列表有 15 秒缓存——删掉它的缓存，删完立即可见。
+          if (host !== undefined) remoteListCache.delete(host.alias)
+          send(res, 200, { ok: true })
+        } finally {
+          await proc.deleteSession().catch(() => {})
+          await proc.dispose().catch(() => {})
+          if (host !== undefined && probeSession !== undefined) {
+            await remoteTransport.killSession(host, probeSession, config.sshCommand)
+          }
+        }
+      } catch (error: unknown) {
+        send(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  })
+
   // 更新 kimi Code 到最新版：无 host 更新本机，有 host 经 ssh 更新对应服务器。
   // 优先 `kimi update`；遇到"该平台不支持自动更新"（如 Linux 原生包）回退官方安装脚本。
   const disposeUpdateKimi = webServer.register({
@@ -584,7 +670,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
-  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / update-kimi / kimi-version）')
+  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
   return () => {
     disposeList()
     disposeLogo()
@@ -596,6 +682,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     disposeRemoteSessions()
     disposeOpenRemote()
     disposeNewRemote()
+    disposeDeleteSession()
     disposeUpdateKimi()
     disposeKimiVersion()
   }

@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { buildRemoteArgv, buildShimCommand, checkRemoteHost, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
+import { buildRemoteArgv, buildShimCommand, checkRemoteHost, parseLiveKimiCwds, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
 import { startAcpProcess } from '../lib/acp-process.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { bootPlugin, FIXTURE, localSpawn, mockGet, mockPost, mockResponse } from './helpers.mjs'
@@ -64,6 +64,26 @@ test('remoteTransport 分派点：当前唯一实现是 posixSshTmux，且委托
   assert.equal(remoteTransport.name, 'posix-ssh-tmux')
   // 委托等价：经分派点与直调具体函数产出一致（缺省 sshBin 走默认 'ssh'）
   assert.deepEqual(remoteTransport.buildArgv(HOST, 's1', 'kimi acp'), buildRemoteArgv(HOST, 's1', 'kimi acp'))
+})
+
+test('parseLiveKimiCwds：kimi 前台 pane 的 cwd 入选，frostfin pane 与 shell pane 排除', () => {
+  const out = [
+    'work|kimi-code|/home/u/proj', // 活 TUI
+    'work|sh|/home/u/proj', // 同 tmux 会话里的 shell pane 不算
+    'frostfin-v2-x|kimi-code|/home/u', // frostfin 自己的 acp pane 排除
+    'misc|node|/home/u/other', // 非 kimi 排除
+    '编辑|kimi-code|/home/u/proj', // 同 cwd 去重
+    '残缺行',
+    '|kimi-code|', // 空 path 排除
+  ].join('\n')
+  assert.deepEqual(parseLiveKimiCwds(out), ['/home/u/proj'])
+})
+
+test('remoteTransport.probeLiveCwds：经 ssh 探活并解析；失败回落空列表', async () => {
+  const live = fakeSsh('#!/bin/sh\necho "work|kimi-code|/home/u/proj"\necho "frostfin-v2-p|kimi-code|/home/u"')
+  assert.deepEqual(await remoteTransport.probeLiveCwds(HOST, live), ['/home/u/proj'])
+  const dead = fakeSsh('#!/bin/sh\nexit 255')
+  assert.deepEqual(await remoteTransport.probeLiveCwds(HOST, dead), [])
 })
 
 /** 造一个假 ssh 可执行（记录参数、按剧本输出/退出码）。 */
@@ -219,7 +239,7 @@ test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑�
 
 test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote 全链', { skip: !hasTmux }, async (t) => {
   // 假 ssh：活 TUI 探针（含 pane_current_path 的 list-panes；shim 就绪闸不含此字段）回剧本行；其余命令本地执行。
-  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\nexec sh -c "$last"')
+  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *pane_current_path*) printf "work|kimi-code|%s\\n" "$PWD" ;; *) exec sh -c "$last" ;; esac')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
   const sshConfigFile = join(sshConfigDir, 'config')
   writeFileSync(sshConfigFile, 'Host spike-local\n  HostName spike.local.example.com\n')
@@ -232,13 +252,15 @@ test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote
   webServer.routes.get('/plugins/frostfin/remote-hosts').handler(mockGet('/plugins/frostfin/remote-hosts'), hostsRes)
   assert.deepEqual(hostsRes.body.hosts, [{ alias: 'spike-local' }])
 
-  // remote-sessions：体检 + 探针列出远程 kimi 会话（夹具的 3 条）。
+  // remote-sessions：体检 + 探针列出远程 kimi 会话（夹具 3 条刨去探针自身握手会话剩 2 条）。
   const listRes = mockResponse()
   await webServer.routes.get('/plugins/frostfin/remote-sessions').handler(
     mockGet('/plugins/frostfin/remote-sessions?host=spike-local'), listRes)
   assert.equal(listRes.body.error, undefined)
-  assert.equal(listRes.body.sessions.length, 3)
+  assert.equal(listRes.body.sessions.length, 2)
   assert.ok(listRes.body.sessions.every(item => typeof item.cwd === 'string'))
+  // 双写提示：假 tmux 探针报夹具 cwd 上有活 TUI → 全部条目带 held 标记。
+  assert.ok(listRes.body.sessions.every(item => item.held === true))
 
   // 未知主机：404 + 人话错误。
   const ghostRes = mockResponse()
@@ -260,9 +282,31 @@ test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote
   // open-remote 的会话 pane 按设计"断开不死"——测试里用完手动收掉，别在本地 tmux 攒垃圾。
   t.after(() => { try { execFileSync('tmux', ['kill-session', '-t', sanitizeSessionName(`frostfin-v2-${openRes.body.sessionId}`)]) } catch { /* 清理 */ } })
 
-  // 探针 pane 收尾：列表探针用完即杀，不留 frostfin-v2-probe-* 僵尸 pane。
+  // 探针 pane 收尾：列表/删除探针用完即杀，不留 frostfin-v2-probe-* 僵尸 pane。
   const tmuxLs = () => { try { return execFileSync('tmux', ['ls', '-F', '#{session_name}']).toString() } catch { return '' } }
   assert.ok(!tmuxLs().includes('frostfin-v2-probe-'), '探针 pane 应用完即杀')
+
+  // delete-session（远程）：夹具删除态经 FROSTFIN_FIXTURE_STATE 跨进程持久化——
+  // pane 由 tmux 服务器拉起、不继承我们的 process.env，走 tmux 全局环境变量传递。
+  // 删完缓存已失效，再列表少一条。
+  const delState = join(mkdtempSync(join(tmpdir(), 'frostfin-delstate-')), 'deleted.txt')
+  execFileSync('tmux', ['set-environment', '-g', 'FROSTFIN_FIXTURE_STATE', delState])
+  t.after(() => { try { execFileSync('tmux', ['set-environment', '-gu', 'FROSTFIN_FIXTURE_STATE']) } catch { /* 清理 */ } })
+  const delRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/delete-session').handler(
+    mockPost({ host: 'spike-local', kimiSessionId: 'session_scripted-dead' }), delRes)
+  assert.equal(delRes.status, 200)
+  const listRes2 = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/remote-sessions').handler(
+    mockGet('/plugins/frostfin/remote-sessions?host=spike-local'), listRes2)
+  // 目标会话没了；探针自己的握手会话（scripted-session-1）也被自删——只剩 no-title。
+  assert.deepEqual(listRes2.body.sessions.map(item => item.sessionId), ['session_no-title'])
+
+  // delete-session（本地，无 host）：本地直起探针删除。
+  const delLocalRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/delete-session').handler(
+    mockPost({ kimiSessionId: 'session_no-title' }), delLocalRes)
+  assert.equal(delLocalRes.status, 200)
 })
 
 test('整插件：未知主机别名给清晰错误', async () => {

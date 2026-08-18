@@ -166,6 +166,44 @@ export function checkRemoteHost(host: SshHostEntry, sshBin = 'ssh'): Promise<Rem
   })
 }
 
+/** 活 TUI 探针的 list-panes 输出格式（| 分隔；含 | 的路径行整体丢弃）。 */
+const LIVE_PANES_FORMAT = '#{session_name}|#{pane_current_command}|#{pane_current_path}'
+
+/**
+ * 解析 tmux list-panes 输出 → 疑似有活 kimi 在前台的工作目录（去重）。
+ * kimi 的进程名是 kimi-code（TUI 与 acp 相同）；frostfin 自己的 pane
+ * （tmux 会话名 frostfin-*）排除——我们的 acp 进程也是 kimi-code，但它不是
+ * TUI 双写威胁。
+ */
+export function parseLiveKimiCwds(output: string): string[] {
+  const cwds = new Set<string>()
+  for (const line of output.split('\n')) {
+    const parts = line.split('|')
+    if (parts.length !== 3) continue
+    const [session, command, path] = parts as [string, string, string]
+    if (session.startsWith('frostfin-') || !command.includes('kimi') || path === '') continue
+    cwds.add(path)
+  }
+  return [...cwds]
+}
+
+/**
+ * 探一台远程主机上"疑似被活 TUI 持有"的工作区（双写防护）：
+ * tmux 全量 pane 中前台命令含 kimi 者的 cwd。两个已知局限——
+ * 裸终端（非 tmux）里的 kimi 看不到；粒度是工作区而非会话
+ * （kimi 不在磁盘留活会话标记：fd 随写随关、updatedAt 只跟踪内容活动）。
+ * 任何失败都回落空列表——held 只是提示标记，不挡列表主流程。
+ */
+export function probeLiveKimiCwds(host: SshHostEntry, sshBin = 'ssh'): Promise<string[]> {
+  const { dest, sshArgs } = remoteTargetOf(host)
+  const argv = [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', dest, `tmux list-panes -a -F '${LIVE_PANES_FORMAT}' 2>/dev/null`]
+  return new Promise((resolve) => {
+    execFile(sshBin, argv, { timeout: 10_000 }, (error, stdout) => {
+      resolve(error !== null ? [] : parseLiveKimiCwds(stdout))
+    })
+  })
+}
+
 /** 杀掉远程的一个 frostfin tmux 会话（探针 pane 用完收尾；不存在/失败都静默）。 */
 export function killRemoteTmuxSession(host: SshHostEntry, sessionName: string, sshBin = 'ssh'): Promise<void> {
   const { dest, sshArgs } = remoteTargetOf(host)
@@ -188,6 +226,8 @@ export interface RemoteTransport {
   check(host: SshHostEntry, sshBin?: string): Promise<RemoteHealth>
   /** 构建承载远程会话的本地 spawn argv。 */
   buildArgv(host: SshHostEntry, sessionName: string, kimiCmd: string, sshBin?: string): string[]
+  /** 探活：疑似被活 TUI 持有的工作区列表（双写防护提示；失败回落空）。 */
+  probeLiveCwds(host: SshHostEntry, sshBin?: string): Promise<string[]>
   /** 杀掉一个 frostfin tmux 会话（探针收尾；不存在/失败都静默）。 */
   killSession(host: SshHostEntry, sessionName: string, sshBin?: string): Promise<void>
 }
@@ -197,6 +237,7 @@ export const posixSshTmux: RemoteTransport = {
   name: 'posix-ssh-tmux',
   check: (host, sshBin) => checkRemoteHost(host, sshBin),
   buildArgv: (host, sessionName, kimiCmd, sshBin) => buildRemoteArgv(host, sessionName, kimiCmd, sshBin),
+  probeLiveCwds: (host, sshBin) => probeLiveKimiCwds(host, sshBin),
   killSession: (host, sessionName, sshBin) => killRemoteTmuxSession(host, sessionName, sshBin),
 }
 

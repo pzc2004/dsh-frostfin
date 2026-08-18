@@ -7,11 +7,21 @@
 // - cancelled → 直接以 stopReason 'cancelled' 应答。
 // prompt 文本含 'boom' → 立即 exit(1)（模拟进程崩溃，驱动 M3 的自愈重连）。
 // session/load → 回放一段固定剧本历史（整块消息级形态，与真 kimi 的探针一致）。
+// session/delete → 记入删除集，后续 session/list 不再返回该会话。
 import { Readable, Writable } from 'node:stream'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 
 const SESSION_ID = 'scripted-session-1'
 export const DEAD_SESSION_ID = 'session_scripted-dead'
+
+/** 已删除的会话 id（session/delete 剧本）；FROSTFIN_FIXTURE_STATE 指向文件时跨进程持久化（探针进程即弃，状态得落盘）。 */
+const stateFile = process.env.FROSTFIN_FIXTURE_STATE
+const deleted = new Set(
+  stateFile !== undefined && stateFile !== '' && existsSync(stateFile)
+    ? readFileSync(stateFile, 'utf8').split('\n').filter(Boolean)
+    : [],
+)
 
 /** 回放的固定剧本（含一轮纯文本 + 一轮工具调用）。 */
 const REPLAY = [
@@ -86,8 +96,13 @@ function makeAgent(conn) {
           { sessionId: SESSION_ID, cwd: process.cwd(), title: 'current scripted session', updatedAt: '2026-08-15T10:00:00.000Z' },
           { sessionId: DEAD_SESSION_ID, cwd: process.cwd(), title: 'scripted dead session', updatedAt: '2026-08-15T11:00:00.000Z' },
           { sessionId: 'session_no-title', cwd: process.cwd(), title: null, updatedAt: '2026-08-14T09:00:00.000Z' },
-        ],
+        ].filter(s => !deleted.has(s.sessionId)),
       })
+    },
+    deleteSession(params) {
+      deleted.add(params.sessionId)
+      if (stateFile !== undefined && stateFile !== '') appendFileSync(stateFile, params.sessionId + '\n')
+      return Promise.resolve({})
     },
     async loadSession(params) {
       for (const update of REPLAY) {

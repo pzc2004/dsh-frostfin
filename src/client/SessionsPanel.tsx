@@ -26,6 +26,8 @@ interface RemoteSessionItem {
   title: string | null
   cwd: string
   updatedAt: string | null
+  /** 疑似被活 TUI 持有（同工作区有前台 kimi）——接入前弹确认。 */
+  held?: boolean
 }
 
 /** 远程主机的面板状态：idle 未连接 → connecting → online / error。 */
@@ -148,6 +150,37 @@ export function SessionsPanel({ onOpen }: SessionsPanelProps) {
     }
   }
 
+  /** 删除一个 kimi 会话（本地/远程共用端点）。已绑定/疑似活 TUI 持有的行不渲染删除按钮（见 JSX）。 */
+  const deleteSession = async (alias: string | undefined, item: { sessionId: string; title: string | null }): Promise<void> => {
+    const ok = window.confirm(
+      `删除会话「${item.title ?? '(无标题)'}」？\n\n它的全部记录会从${alias === undefined ? '本机' : `主机 ${alias}`}的磁盘上删掉，不可恢复。`,
+    )
+    if (!ok) return
+    setBusy(`del-${item.sessionId}`)
+    try {
+      const res = await fetch('/plugins/frostfin/delete-session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...alias === undefined ? {} : { host: alias }, kimiSessionId: item.sessionId }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      if (alias === undefined) {
+        setEntries(prev => prev.filter(e => e.sessionId !== item.sessionId))
+      } else {
+        setRemoteState(prev => {
+          const st = prev[alias]
+          if (st === undefined) return prev
+          return { ...prev, [alias]: { ...st, sessions: st.sessions.filter(s => s.sessionId !== item.sessionId) } }
+        })
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   /** 连接/刷新一台远程主机：懒连接列出它的 kimi 会话。 */
   const connectRemote = async (alias: string): Promise<void> => {
     setRemoteState(prev => ({ ...prev, [alias]: { status: 'connecting', sessions: prev[alias]?.sessions ?? [] } }))
@@ -174,8 +207,17 @@ export function SessionsPanel({ onOpen }: SessionsPanelProps) {
     }
   }
 
-  /** 接入一台远程主机上的 kimi 会话。 */
-  const openRemote = async (alias: string, kimiSessionId: string): Promise<void> => {
+  /** 接入一台远程主机上的 kimi 会话；held 标记（疑似活 TUI 持有）先弹确认——双写会分叉。 */
+  const openRemote = async (alias: string, item: RemoteSessionItem): Promise<void> => {
+    if (item.held === true) {
+      const ok = window.confirm(
+        `工作区 ${item.cwd} 里有 kimi 正在前台运行（很可能就是 tmux 里正开着的这个会话）。\n\n` +
+        '接入正被持有的会话会让两个进程共写同一份会话记录：历史交错分叉、上下文互相污染。\n\n' +
+        '确认它没有在别处开着，再接入？',
+      )
+      if (!ok) return
+    }
+    const kimiSessionId = item.sessionId
     setBusy(`${alias}/${kimiSessionId}`)
     try {
       const res = await fetch('/plugins/frostfin/open-remote', {
@@ -312,6 +354,16 @@ export function SessionsPanel({ onOpen }: SessionsPanelProps) {
                   >
                     {busy === entry.sessionId ? '接入中…' : entry.bound ? '打开' : '接入'}
                   </button>
+                  {!entry.bound && (
+                    <button
+                      style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
+                      disabled={busy !== null}
+                      title="从磁盘删除该会话（不可恢复）"
+                      onClick={() => void deleteSession(undefined, entry)}
+                    >
+                      {busy === `del-${entry.sessionId}` ? '删除中…' : '删除'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -365,16 +417,29 @@ export function SessionsPanel({ onOpen }: SessionsPanelProps) {
                 {items.map(entry => (
                   <div key={entry.sessionId} style={styles.row}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={styles.title}>{entry.title ?? '(无标题)'}</div>
+                      <div style={styles.title}>
+                        {entry.held === true && <span style={{ color: '#e8a13c' }} title="该工作区有 kimi 正在前台运行，接入前会要求确认">⚠ </span>}
+                        {entry.title ?? '(无标题)'}
+                      </div>
                       <div style={styles.meta}>{formatTime(entry.updatedAt)}</div>
                     </div>
                     <button
                       style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
                       disabled={busy !== null}
-                      onClick={() => void openRemote(alias, entry.sessionId)}
+                      onClick={() => void openRemote(alias, entry)}
                     >
                       {busy === `${alias}/${entry.sessionId}` ? '接入中…' : '接入'}
                     </button>
+                    {entry.held !== true && (
+                      <button
+                        style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
+                        disabled={busy !== null}
+                        title="从远程磁盘删除该会话（不可恢复）"
+                        onClick={() => void deleteSession(alias, entry)}
+                      >
+                        {busy === `del-${entry.sessionId}` ? '删除中…' : '删除'}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

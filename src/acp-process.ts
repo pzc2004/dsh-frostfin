@@ -88,6 +88,8 @@ export interface AcpProcess {
   setConfigOption(configId: string, value: string): Promise<void>
   /** `session/delete`：删除本会话（预热等一次性会话的清理；不支持时静默）。 */
   deleteSession(): Promise<void>
+  /** `session/delete`：删除任意会话（面板手动清理）。@returns false = 该 kimi 不支持此能力或调用失败。 */
+  deleteSessionById(sessionId: string): Promise<boolean>
   /** `session/list`：枚举本机磁盘上的 kimi 会话（第一页；本地会话通常一页装完）。 */
   listSessions(): Promise<SessionInfo[]>
   /** 尽力发送 `session/cancel`（子进程已消失时吞掉错误）。 */
@@ -271,6 +273,16 @@ export async function startAcpProcess(spec: AcpProcessSpec): Promise<AcpProcess>
       // kimi 对 session/delete 的支持是可选能力；不存在或失败都静默（调用方是一次性场景）。
       const optional = conn as unknown as { deleteSession?: (params: { sessionId: string }) => Promise<unknown> }
       await optional.deleteSession?.({ sessionId: remoteSessionId }).catch(() => {})
+    },
+    async deleteSessionById(sessionId: string): Promise<boolean> {
+      const optional = conn as unknown as { deleteSession?: (params: { sessionId: string }) => Promise<unknown> }
+      if (optional.deleteSession === undefined) return false
+      try {
+        await optional.deleteSession({ sessionId })
+        return true
+      } catch {
+        return false
+      }
     },
     async listSessions(): Promise<SessionInfo[]> {
       const response = await conn.listSessions({})
