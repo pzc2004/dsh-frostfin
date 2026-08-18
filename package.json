@@ -41,6 +41,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.json",
     "build:client": "node scripts/build-client.mjs",
+    "prepare": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dsh": {
