@@ -3,12 +3,13 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionStore, { SessionPreparation } from '@deepseek-ai/dsh-session'
 import * as frostfin from '../lib/index.js'
 
-export const FIXTURE = new URL('./fixtures/scripted-acp-child.mjs', import.meta.url).pathname
+export const FIXTURE = fileURLToPath(new URL('./fixtures/scripted-acp-child.mjs', import.meta.url))
 
 /** 测试用的最小 subprocess 接缝实现（无进程组树杀，scripted 子进程没有孙进程）。 */
 export function localSpawn(spec) {
