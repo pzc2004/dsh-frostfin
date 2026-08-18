@@ -35,17 +35,28 @@ const PANE_TERMIOS = '-echo -onlcr icrnl'
 export function buildShimCommand(sessionName: string, kimiCmd: string): string {
   const inf = `/tmp/frostfin-${sessionName}.in`
   const outf = `/tmp/frostfin-${sessionName}.fifo`
+  // pane 负载（创建与自愈重启共用同一份）：fd3 RDWR 持有输入 fifo（无外部写者也
+  // 不 EOF——shim 断开 kimi 不死），cat 把 fifo 中继进 kimi 的管道 stdin。
+  // 不让 kimi 直读 RDWR fifo：node 的 stdin 那样挂在 64KB+ 负载会卡（实测：
+  // pipe 正常、fifo 直读卡死、cat 中继后正常）。
+  const paneCmd = `stty ${PANE_TERMIOS}; exec sh -c '(exec 3<>\\"${inf}\\" && cat \\"${inf}\\") | exec ${kimiCmd}'`
   return [
-    // 只在会话不存在时创建。输入 fifo 由 pane 侧 fd3 以 RDWR 持有（无外部写者也
-    // 不 EOF——shim 断开 kimi 不死），cat 把 fifo 中继进 kimi 的管道 stdin。
-    // 不让 kimi 直读 RDWR fifo：node 的 stdin 那样挂在 64KB+ 负载会卡（实测：
-    // pipe 正常、fifo 直读卡死、cat 中继后正常）。
-    `tmux has-session -t "${sessionName}" 2>/dev/null || { rm -f "${inf}"; mkfifo "${inf}"; tmux new-session -d -s "${sessionName}" "stty ${PANE_TERMIOS}; exec sh -c '(exec 3<>\\"${inf}\\" && cat \\"${inf}\\") | exec ${kimiCmd}'"; }`,
-    // 就绪闸：等 pane 的命令真正 exec 起来。排除启动期的过渡命令名
-    //（sh/bash/dash/zsh/stty；macOS 的 sh 以 bash 上报）。
-    `for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do pc=$(tmux list-panes -t "${sessionName}" -F "#{pane_current_command}" 2>/dev/null | head -1); case "$pc" in ""|sh|bash|dash|zsh|stty) sleep 0.3 ;; *) break ;; esac; done`,
+    `tmux has-session -t "${sessionName}" 2>/dev/null || { rm -f "${inf}"; mkfifo "${inf}"; tmux new-session -d -s "${sessionName}" "${paneCmd}"; }`,
+    // kimi 存活判定：pane 根进程（管道包装 sh）的子进程 ≥2 = 左侧 cat + 右侧 kimi 都在。
+    // 不能用 pane_current_command——管道形态的前台组长永远是包装 sh（上报 sh/bash），
+    // 活着和死透显示一模一样（实测）。
+    `alive() { pp=$(tmux display-message -p -t "${sessionName}" '#{pane_pid}' 2>/dev/null); [ -n "$pp" ] && [ "$(pgrep -P "$pp" 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ]; }`,
+    // 就绪闸：等 pane 的 kimi 真正起来（新建要 exec 时间；重连活 pane 一次即过）。
+    `for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do alive && break; sleep 0.3; done`,
+    // 死 pane 自愈：闸后 kimi 仍不在 = pane 活着但 kimi 死透（卡住的 cat/sh 成僵尸）
+    // → respawn-pane -k 原位重启（fifo 路径不变），再等一次闸。
+    // 不重建会话：kimi 会话在磁盘上，session/load 回放照常。
+    `alive || tmux respawn-pane -k -t "${sessionName}" "${paneCmd}"`,
+    `for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do alive && break; sleep 0.3; done`,
     `rm -f "${outf}"; mkfifo "${outf}"`,
-    `tmux pipe-pane -t "${sessionName}" -o "cat > ${outf}"`,
+    // 不带 -o：直接顶掉可能残留的死 pipe——旧 shim 的 cat 被杀后 tmux 不一定及时发现
+    // 读取端没了，-o 会把 pane 输出写进已删除的 inode，新 shim 永远收不到（实测黑洞）。
+    `tmux pipe-pane -t "${sessionName}" "cat > ${outf}"`,
     // 后台 cat 会继承 shim 的 stdout——不显式收尸的话，shim 退出后它仍占着
     // 管道，客户端的 close 事件永远不来（e2e 排障实录）。trap 兜底。
     `cat "${outf}" & CAT_PID=$!`,
@@ -155,8 +166,18 @@ export function checkRemoteHost(host: SshHostEntry, sshBin = 'ssh'): Promise<Rem
   })
 }
 
+/** 杀掉远程的一个 frostfin tmux 会话（探针 pane 用完收尾；不存在/失败都静默）。 */
+export function killRemoteTmuxSession(host: SshHostEntry, sessionName: string, sshBin = 'ssh'): Promise<void> {
+  const { dest, sshArgs } = remoteTargetOf(host)
+  const argv = [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', dest, `tmux kill-session -t "${sessionName}" 2>/dev/null || true`]
+  return new Promise((resolve) => {
+    execFile(sshBin, argv, { timeout: 10_000 }, () => resolve())
+  })
+}
+
 /**
- * 远程传输接口：把"连一台远程主机"抽象成两个动作——体检与构建 spawn argv。
+ * 远程传输接口：把"连一台远程主机"抽象成一组操作——体检、构建 spawn argv、
+ * 探活（双写防护）、杀 tmux 会话（探针收尾）。
  * 立约给未来的非 POSIX 传输（Windows 主机没有 tmux/sh/fifo 这套构件）；
  * 纪律是先立约——没有测试的第二实现不写。
  */
@@ -167,6 +188,8 @@ export interface RemoteTransport {
   check(host: SshHostEntry, sshBin?: string): Promise<RemoteHealth>
   /** 构建承载远程会话的本地 spawn argv。 */
   buildArgv(host: SshHostEntry, sessionName: string, kimiCmd: string, sshBin?: string): string[]
+  /** 杀掉一个 frostfin tmux 会话（探针收尾；不存在/失败都静默）。 */
+  killSession(host: SshHostEntry, sessionName: string, sshBin?: string): Promise<void>
 }
 
 /** POSIX 传输（当前唯一实现）：ssh 承载、tmux 养 pane、fifo 中继、sh 做 shim。 */
@@ -174,6 +197,7 @@ export const posixSshTmux: RemoteTransport = {
   name: 'posix-ssh-tmux',
   check: (host, sshBin) => checkRemoteHost(host, sshBin),
   buildArgv: (host, sessionName, kimiCmd, sshBin) => buildRemoteArgv(host, sessionName, kimiCmd, sshBin),
+  killSession: (host, sessionName, sshBin) => killRemoteTmuxSession(host, sessionName, sshBin),
 }
 
 /**

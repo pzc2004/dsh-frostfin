@@ -426,10 +426,12 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
         remoteListCache.set(host.alias, { at: Date.now(), payload })
         return payload
       } finally {
-        // 探针握手的空会话即建即删（不然每次连接都在远程留一个"无标题"垃圾会话）；
-        // 探针进程即弃：断 ssh（detach 语义），远程 pane 与 kimi 会话全部保留。
+        // 探针握手的空会话即建即删（不然每次连接都在远程留一个"无标题"垃圾会话）。
         await proc.deleteSession().catch(() => {})
         await proc.dispose().catch(() => {})
+        // 探针 pane 收尾：探针 kimi 死后 pane 会卡在 sh 成僵尸——用完即杀
+        //（真实会话的 pane 不动，那是"断线不死"的本体）。
+        await remoteTransport.killSession(host, probeSession, config.sshCommand)
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)

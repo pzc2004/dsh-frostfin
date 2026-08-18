@@ -24,17 +24,23 @@ test('sanitizeSessionName：非常规字符压成 -，截断 48', () => {
   assert.equal(sanitizeSessionName('x'.repeat(60)), 'x'.repeat(48))
 })
 
-test('buildShimCommand：fifo 双向通道 + 就绪闸 + 后台 cat 收尸', () => {
+test('buildShimCommand：fifo 双向通道 + 存活闸 + 后台 cat 收尸', () => {
   const shim = buildShimCommand('s1', 'kimi acp')
   assert.ok(shim.includes('tmux has-session -t "s1"'))
   assert.ok(shim.includes('/tmp/frostfin-s1.in'))
   assert.ok(shim.includes('/tmp/frostfin-s1.fifo'))
-  assert.ok(shim.includes('pipe-pane'))
+  // pipe-pane 不带 -o：直接顶掉残留死 pipe（-o 会把输出写进已删除 inode，实测黑洞）
+  assert.ok(shim.includes('tmux pipe-pane -t "s1" "cat >'))
+  assert.ok(!shim.includes('pipe-pane -t "s1" -o'))
   // 输入 fifo 由 pane 侧 fd3 RDWR 持有 + cat 中继进 kimi 的管道 stdin（断线不死且大负载不卡）
   assert.ok(shim.includes('exec 3<>'))
   assert.ok(shim.includes('| exec kimi acp'))
   // 后台 cat 必须收尸（否则它继承 stdout，客户端 close 永不触发）
   assert.ok(shim.includes('CAT_PID'))
+  // 死 pane 自愈：存活判定数 pane 根进程子进程（管道包装 sh + cat + kimi），死了 respawn-pane -k 原位重启
+  assert.ok(shim.includes('alive()'))
+  assert.ok(shim.includes("pgrep -P"))
+  assert.ok(shim.includes('respawn-pane -k'))
 })
 
 test('remoteTargetOf / buildRemoteArgv：目标串与参数顺序', () => {
@@ -141,6 +147,39 @@ test('e2e：shim+tmux 全链路（假 ssh 本地执行，pane 跑 ACP 夹具）'
   execFileSync('tmux', ['has-session', '-t', session])
 })
 
+test('e2e：死 pane 自愈——kimi 死后重连，shim 原位重启（respawn-pane -k）', { skip: !hasTmux }, async (t) => {
+  const session = `spike-${crypto.randomUUID().slice(0, 8)}`
+  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\nexec sh -c "$last"')
+  const argv = buildRemoteArgv({ alias: 'spike-local' }, session, `${process.execPath} ${FIXTURE}`)
+  argv[0] = ssh
+  const spec = {
+    command: argv[0],
+    args: argv.slice(1),
+    cwd: process.cwd(),
+    permission: 'allow',
+    disposeEofGraceMs: 2000,
+    disposeGraceMs: 1000,
+    spawn: localSpawn,
+  }
+  const proc1 = await startAcpProcess({ ...spec, onSessionUpdate: () => {} })
+  await proc1.dispose()
+  t.after(() => { try { execFileSync('tmux', ['kill-session', '-t', session]) } catch { /* 清理 */ } })
+
+  // 模拟"kimi 死了、pane 卡在 shell"的僵尸态（生产实录：旧 shim 会把管子接给死 pane → 握手永挂）。
+  execFileSync('tmux', ['respawn-pane', '-k', '-t', session, 'exec sh'])
+  // 重连：就绪闸后仍是 sh → shim 应 respawn-pane 原位重启夹具 → 握手成功、prompt 可跑。
+  const updates = []
+  const proc2 = await startAcpProcess({ ...spec, onSessionUpdate: u => updates.push(u) })
+  t.after(async () => { await proc2.dispose().catch(() => {}) })
+  assert.equal(typeof proc2.sessionId, 'string')
+  const stop = await proc2.prompt([{ type: 'text', text: '打个招呼' }])
+  assert.equal(stop.stopReason, 'end_turn')
+  const text = updates
+    .filter(u => u.sessionUpdate === 'agent_message_chunk')
+    .map(u => u.content.text).join('')
+  assert.ok(text.includes('你好'), '自愈后应收到夹具的流式回话')
+})
+
 test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑定记主机，dispose 不杀 pane', { skip: !hasTmux }, async (t) => {
   const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\nexec sh -c "$last"')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
@@ -179,6 +218,7 @@ test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑�
 })
 
 test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote 全链', { skip: !hasTmux }, async (t) => {
+  // 假 ssh：活 TUI 探针（含 pane_current_path 的 list-panes；shim 就绪闸不含此字段）回剧本行；其余命令本地执行。
   const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\nexec sh -c "$last"')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
   const sshConfigFile = join(sshConfigDir, 'config')
@@ -217,6 +257,12 @@ test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote
   // 接入的 agent 是远程绑定。
   const agent = ctx.agents.get(openRes.body.sessionId)
   assert.equal(agent.remoteHost?.alias, 'spike-local')
+  // open-remote 的会话 pane 按设计"断开不死"——测试里用完手动收掉，别在本地 tmux 攒垃圾。
+  t.after(() => { try { execFileSync('tmux', ['kill-session', '-t', sanitizeSessionName(`frostfin-v2-${openRes.body.sessionId}`)]) } catch { /* 清理 */ } })
+
+  // 探针 pane 收尾：列表探针用完即杀，不留 frostfin-v2-probe-* 僵尸 pane。
+  const tmuxLs = () => { try { return execFileSync('tmux', ['ls', '-F', '#{session_name}']).toString() } catch { return '' } }
+  assert.ok(!tmuxLs().includes('frostfin-v2-probe-'), '探针 pane 应用完即杀')
 })
 
 test('整插件：未知主机别名给清晰错误', async () => {
