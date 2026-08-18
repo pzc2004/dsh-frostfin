@@ -214,6 +214,18 @@ export function killRemoteTmuxSession(host: SshHostEntry, sessionName: string, s
 }
 
 /**
+ * 远程路径的 ~ 展开：`~` 与 `~/x` → 远程 home（探针握手时解析）；
+ * `~user/x` 形式不展开（kimi 的 cwd 校验不走 shell，展开了也是错路径，不如原样报错）。
+ * homeDir 未知时原样返回。
+ */
+export function expandRemoteHome(cwd: string, homeDir: string | undefined): string {
+  if (homeDir === undefined) return cwd
+  if (cwd === '~') return homeDir
+  if (cwd.startsWith('~/')) return homeDir.replace(/\/$/, '') + cwd.slice(1)
+  return cwd
+}
+
+/**
  * 远程传输接口：把"连一台远程主机"抽象成一组操作——体检、构建 spawn argv、
  * 探活（双写防护）、杀 tmux 会话（探针收尾）。
  * 立约给未来的非 POSIX 传输（Windows 主机没有 tmux/sh/fifo 这套构件）；

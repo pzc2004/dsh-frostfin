@@ -25,7 +25,7 @@ import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import type { KimiSessionMap } from './kimi-sessions.js'
 import type { QuestionRegistry } from './question.js'
 import { startAcpProcess } from './acp-process.js'
-import { remoteTargetOf, remoteTransport, sanitizeSessionName } from './remote.js'
+import { expandRemoteHome, remoteTargetOf, remoteTransport, sanitizeSessionName } from './remote.js'
 import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import type { Config } from './index.js'
 
@@ -293,6 +293,35 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
+  /**
+   * 重连 kimi 进程（状态条对当前打开会话的自动重连，或用户手动重试）。
+   * 有绑定才重连——无绑定的全新会话保持惰性启动，不因为被看一眼就起进程。
+   * 失败不抛 HTTP 错：{ ok: false, error } 让状态条显示并走冷却重试。
+   */
+  const disposeReconnect = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/reconnect',
+    handler: async (req, res) => {
+      try {
+        const body = await readBody(req) as { sessionId?: unknown }
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+        const agent = ctx.agents.get(sessionId as SessionId)
+        if (!(agent instanceof FrostfinAgent)) {
+          send(res, 404, { ok: false, error: '会话不存在或不是 frostfin 驱动' })
+          return
+        }
+        if (agent.boundKimiSessionId === undefined) {
+          send(res, 200, { ok: false, skipped: 'no-binding' })
+          return
+        }
+        await agent.ensureKimiProcess()
+        send(res, 200, { ok: true })
+      } catch (error: unknown) {
+        send(res, 200, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  })
+
   const disposeOpen = webServer.register({
     kind: 'exact',
     path: '/plugins/frostfin/open',
@@ -526,9 +555,11 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           send(res, 502, { error: listing.error })
           return
         }
-        const cwd = typeof body.cwd === 'string' && body.cwd.trim() !== ''
+        const rawCwd = typeof body.cwd === 'string' && body.cwd.trim() !== ''
           ? body.cwd.trim()
           : (listing.homeDir ?? '/tmp')
+        // 展开 ~：kimi 校验远程 cwd 必须真实存在，而 JSON-RPC 参数不经 shell、~ 不会展开（实测）。
+        const cwd = expandRemoteHome(rawCwd, listing.homeDir)
         const sessionId = `session-${randomUUID()}` as SessionId
         const handle = await ctx.agents.create({
           sessionId,
@@ -670,11 +701,12 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
-  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
+  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / reconnect / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
   return () => {
     disposeList()
     disposeLogo()
     disposeStatus()
+    disposeReconnect()
     disposeOpen()
     disposePending()
     disposeAnswer()

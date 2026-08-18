@@ -68,6 +68,10 @@ export interface KimiStatus {
   cwd?: string
   /** 远程线：远程主机的别名（本地会话为 undefined）。 */
   host?: string
+  /** 远程线：ssh 配置里的登录用户（状态条拼 user@host 用；未配置为 undefined）。 */
+  hostUser?: string
+  /** 是否已绑定 kimi 会话（状态条据此决定未连接时能否自动重连：无绑定保持惰性启动）。 */
+  bound: boolean
 }
 
 /** 读取取消信号携带的原因（cancel(cause) 中止时一定带原因）。 */
@@ -389,7 +393,11 @@ export class FrostfinAgent implements Agent {
       size: this.lastUsage?.size,
       alive: this.acp !== undefined && !this.processDead,
       cwd: this.session.header.cwd,
-      ...this.deps.remoteHost === undefined ? {} : { host: this.deps.remoteHost.alias },
+      bound: this.kimiSessionId !== undefined,
+      ...this.deps.remoteHost === undefined ? {} : {
+        host: this.deps.remoteHost.alias,
+        ...this.deps.remoteHost.user === undefined ? {} : { hostUser: this.deps.remoteHost.user },
+      },
     }
   }
 

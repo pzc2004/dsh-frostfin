@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { foldSurface } from '@deepseek-ai/dsh-session'
-import { bootFrostfin, bootPlugin, runOneTurn } from './helpers.mjs'
+import { bootFrostfin, bootPlugin, mockPost, mockResponse, runOneTurn } from './helpers.mjs'
 
 const DEAD = 'session_scripted-dead'
 
@@ -161,6 +161,39 @@ test('进程自愈：崩溃的 turn 记 error，下一个 prompt 自动重连并
   const replayed = session.events.filter(event =>
     event.type === 'user/message' && event.data.content.some(block => block.type === 'text' && block.text.includes('回放')))
   assert.equal(replayed.length, 0)
+})
+
+test('重连端点：无绑定跳过（惰性不破）；崩溃后 POST reconnect 重连成功', async (t) => {
+  const { ctx, webServer } = await bootPlugin({ withWebServer: true })
+  const handle = await ctx.agents.create({
+    sessionId: `test-${crypto.randomUUID()}`,
+    meta: { cwd: process.cwd() },
+  })
+  const { agent } = handle
+  t.after(async () => {
+    await handle.dispose().catch(() => {})
+    await ctx.fiber.dispose().catch(() => {})
+  })
+
+  // 无绑定（从未发过 prompt）：跳过，不起进程（惰性启动不破）。
+  const skipRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/reconnect').handler(mockPost({ sessionId: agent.id }), skipRes)
+  assert.equal(skipRes.status, 200)
+  assert.equal(skipRes.body.ok, false)
+  assert.equal(skipRes.body.skipped, 'no-binding')
+  assert.equal(agent.getKimiStatus().alive, false)
+
+  // 正常一轮（登记绑定）→ boom 崩掉进程 → 端点重连 → 复活。
+  await runOneTurn(agent, prompt('正常一'))
+  await runOneTurn(agent, prompt('boom'))
+  // 进程退出事件是异步的：等状态口径看到死亡再测（最多 5 秒）。
+  for (let i = 0; i < 50 && agent.getKimiStatus().alive; i += 1) await new Promise(r => setTimeout(r, 100))
+  assert.equal(agent.getKimiStatus().alive, false)
+  const reRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/reconnect').handler(mockPost({ sessionId: agent.id }), reRes)
+  assert.equal(reRes.status, 200)
+  assert.equal(reRes.body.ok, true)
+  assert.equal(agent.getKimiStatus().alive, true)
 })
 
 test('档位重放：切到 yolo 后进程崩溃重连，kimi 侧模式不丢', async (t) => {

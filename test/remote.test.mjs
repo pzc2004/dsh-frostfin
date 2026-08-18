@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { buildRemoteArgv, buildShimCommand, checkRemoteHost, parseLiveKimiCwds, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
+import { buildRemoteArgv, buildShimCommand, checkRemoteHost, expandRemoteHome, parseLiveKimiCwds, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
 import { startAcpProcess } from '../lib/acp-process.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { bootPlugin, FIXTURE, localSpawn, mockGet, mockPost, mockResponse } from './helpers.mjs'
@@ -77,6 +77,15 @@ test('parseLiveKimiCwds：kimi 前台 pane 的 cwd 入选，frostfin pane 与 sh
     '|kimi-code|', // 空 path 排除
   ].join('\n')
   assert.deepEqual(parseLiveKimiCwds(out), ['/home/u/proj'])
+})
+
+test('expandRemoteHome：~ 与 ~/x 展开为远程 home，其余原样', () => {
+  assert.equal(expandRemoteHome('~', '/home/u'), '/home/u')
+  assert.equal(expandRemoteHome('~/proj/x', '/home/u'), '/home/u/proj/x')
+  assert.equal(expandRemoteHome('~/proj', '/home/u/'), '/home/u/proj') // home 尾斜杠压住
+  assert.equal(expandRemoteHome('/abs/path', '/home/u'), '/abs/path')
+  assert.equal(expandRemoteHome('~other/x', '/home/u'), '~other/x') // ~user 形式不展开
+  assert.equal(expandRemoteHome('~/proj', undefined), '~/proj') // home 未知原样
 })
 
 test('remoteTransport.probeLiveCwds：经 ssh 探活并解析；失败回落空列表', async () => {
@@ -307,6 +316,13 @@ test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote
   await webServer.routes.get('/plugins/frostfin/delete-session').handler(
     mockPost({ kimiSessionId: 'session_no-title' }), delLocalRes)
   assert.equal(delLocalRes.status, 200)
+
+  // new-remote：~ 展开为远程 home（假 ssh 体检的 PROBE_HOME = 测试进程 HOME）。
+  const newRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/new-remote').handler(
+    mockPost({ host: 'spike-local', cwd: '~/proj' }), newRes)
+  assert.equal(newRes.status, 200)
+  assert.equal(newRes.body.cwd, `${homedir()}/proj`)
 })
 
 test('整插件：未知主机别名给清晰错误', async () => {
