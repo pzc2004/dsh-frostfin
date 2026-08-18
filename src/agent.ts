@@ -39,6 +39,7 @@ import type { AcpProcess } from './acp-process.js'
 import type { DshScopeModule } from './host-scope.js'
 import { flattenSelectOptions, KIMI_MODEL, KIMI_PROVIDER } from './kimi-route.js'
 import type { KimiSessionPrefs } from './kimi-sessions.js'
+import type { SshHostEntry } from './ssh-config.js'
 import {
   acpStopReason,
   createTranslator,
@@ -65,6 +66,8 @@ export interface KimiStatus {
   size?: number
   alive: boolean
   cwd?: string
+  /** 远程线：远程主机的别名（本地会话为 undefined）。 */
+  host?: string
 }
 
 /** 读取取消信号携带的原因（cancel(cause) 中止时一定带原因）。 */
@@ -93,6 +96,8 @@ export interface FrostfinAgentDeps {
   kimiSessionId?: string
   /** kimi 会话运行档位（模式/thinking）的持久化存储；缺省时重连不重放。 */
   prefs?: KimiSessionPrefs
+  /** 远程线：会话的远程 ssh 主机（本地会话为 undefined）。 */
+  remoteHost?: SshHostEntry
 }
 
 /**
@@ -244,6 +249,11 @@ export class FrostfinAgent implements Agent {
     this.acp = acp
   }
 
+  /** 远程线：会话的远程 ssh 主机（本地会话为 undefined）。 */
+  get remoteHost(): SshHostEntry | undefined {
+    return this.deps.remoteHost
+  }
+
   /** 登记新 kimi 会话的绑定（新建会话握手成功后调用一次）。 */
   bindKimiSession(kimiSessionId: string): void {
     this.kimiSessionId = kimiSessionId
@@ -379,6 +389,7 @@ export class FrostfinAgent implements Agent {
       size: this.lastUsage?.size,
       alive: this.acp !== undefined && !this.processDead,
       cwd: this.session.header.cwd,
+      ...this.deps.remoteHost === undefined ? {} : { host: this.deps.remoteHost.alias },
     }
   }
 

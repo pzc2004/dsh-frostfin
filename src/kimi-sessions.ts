@@ -23,7 +23,7 @@ export function expandStateFile(path: string): string {
 
 /** 一个 DSH 会话对应一个 kimi 会话的映射表（惰性读盘，写时整体覆写）。 */
 export class KimiSessionMap {
-  private readonly map = new Map<string, string>()
+  private readonly map = new Map<string, { kimiSessionId: string; host?: string }>()
   private loaded = false
 
   constructor(private readonly file: string) {}
@@ -31,14 +31,20 @@ export class KimiSessionMap {
   /** 读取一个 DSH 会话绑定的 kimi 会话 id；没有记录时返回 undefined。 */
   get(dshSessionId: string): string | undefined {
     this.load()
-    return this.map.get(dshSessionId)
+    return this.map.get(dshSessionId)?.kimiSessionId
+  }
+
+  /** 读取绑定记录的远程主机别名（本地会话为 undefined）。 */
+  getHost(dshSessionId: string): string | undefined {
+    this.load()
+    return this.map.get(dshSessionId)?.host
   }
 
   /** 反查：一个 kimi 会话 id 是否已被某个 DSH 会话绑定。 */
   hasValue(kimiSessionId: string): boolean {
     this.load()
     for (const value of this.map.values()) {
-      if (value === kimiSessionId) return true
+      if (value.kimiSessionId === kimiSessionId) return true
     }
     return false
   }
@@ -47,15 +53,18 @@ export class KimiSessionMap {
   keyOf(kimiSessionId: string): string | undefined {
     this.load()
     for (const [key, value] of this.map) {
-      if (value === kimiSessionId) return key
+      if (value.kimiSessionId === kimiSessionId) return key
     }
     return undefined
   }
 
-  /** 记录一条绑定并落盘（临时文件 + rename，避免半截文件）。 */
-  set(dshSessionId: string, kimiSessionId: string): void {
+  /**
+   * 记录一条绑定并落盘（临时文件 + rename，避免半截文件）。
+   * @param host - 远程线：会话所在的 ssh 主机别名（本地会话省略）。
+   */
+  set(dshSessionId: string, kimiSessionId: string, host?: string): void {
     this.load()
-    this.map.set(dshSessionId, kimiSessionId)
+    this.map.set(dshSessionId, { kimiSessionId, ...host === undefined ? {} : { host } })
     this.persist()
   }
 
@@ -73,7 +82,18 @@ export class KimiSessionMap {
       const parsed: unknown = JSON.parse(text)
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return
       for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof value === 'string') this.map.set(key, value)
+        if (typeof value === 'string') {
+          // 旧格式："dshId": "kimiSessionId" —— 迁移为对象形。
+          this.map.set(key, { kimiSessionId: value })
+        } else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>
+          if (typeof record.kimiSessionId === 'string') {
+            this.map.set(key, {
+              kimiSessionId: record.kimiSessionId,
+              ...typeof record.host === 'string' ? { host: record.host } : {},
+            })
+          }
+        }
       }
     } catch {
       // 损坏的映射文件按空映射处理（resume 会以"没有绑定记录"明确报错）。

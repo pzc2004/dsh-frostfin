@@ -39,8 +39,14 @@ export interface AcpProcessSpec {
   command: string
   /** 传给 {@link command} 的参数。 */
   args: string[]
-  /** 子进程与 ACP 会话共用的绝对工作目录。 */
+  /** 子进程的绝对工作目录（本地必须存在）。 */
   cwd: string
+  /**
+   * ACP 会话的工作目录（newSession/loadSession 携带；远程线 = 远程路径，
+   * 与本地 spawn 的 cwd 解耦——本地 cwd 不存在会 spawn ENOENT）。
+   * 缺省回退到 {@link cwd}。
+   */
+  sessionCwd?: string
   /** 权限自动应答策略；'ask' 时由 {@link onRequestPermission} 桥接 DSH 审批。 */
   permission: PermissionPolicy
   /** dispose 第一阶梯：stdin EOF 后等待子进程协作退出的毫秒数。 */
@@ -224,7 +230,7 @@ export async function startAcpProcess(spec: AcpProcessSpec): Promise<AcpProcess>
           // fs/read_text_file 等反向 RPC 不会路由到本客户端。
           clientCapabilities: {},
         })
-        const session = await conn.newSession({ cwd: spec.cwd, mcpServers: [] })
+        const session = await conn.newSession({ cwd: spec.sessionCwd ?? spec.cwd, mcpServers: [] })
         sessionId = session.sessionId
         configOptions = session.configOptions ?? undefined
       })(),
@@ -253,7 +259,7 @@ export async function startAcpProcess(spec: AcpProcessSpec): Promise<AcpProcess>
     get configOptions() { return configOptions },
     prompt: prompt => conn.prompt({ sessionId: remoteSessionId, prompt }),
     async loadSession(targetSessionId: string): Promise<void> {
-      await conn.loadSession({ sessionId: targetSessionId, cwd: spec.cwd, mcpServers: [] })
+      await conn.loadSession({ sessionId: targetSessionId, cwd: spec.sessionCwd ?? spec.cwd, mcpServers: [] })
       remoteSessionId = targetSessionId
     },
     async setConfigOption(configId: string, value: string): Promise<void> {

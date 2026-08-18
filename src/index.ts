@@ -43,6 +43,12 @@ export const Config = z.object({
   primeCatalog: z.boolean()
     .description('启动时预热一次 kimi 握手，让模型选择器立即显示真实模型列表（关闭则等首个会话握手时刷新）')
     .default(true),
+  sshConfigFile: z.string()
+    .description('远程线：ssh 配置文件路径（~ 开头展开为 home；按 VS Code 语义解析 Host 块与 Include）')
+    .default('~/.ssh/config'),
+  sshCommand: z.string()
+    .description('远程线：ssh 可执行名/包装脚本（测试可注入假 ssh）')
+    .default('ssh'),
 })
 
 export interface Config {
@@ -57,6 +63,8 @@ export interface Config {
   installPreset: boolean
   syncModels: boolean
   primeCatalog: boolean
+  sshConfigFile: string
+  sshCommand: string
 }
 
 /**
@@ -86,7 +94,7 @@ export function apply(ctx: Context, config: Config) {
   factory.setQuestionRegistry(questions)
   // 面板端点（webServer 服务可能晚于我们激活——用 inject 等它就绪；headless 无此服务则跳过）。
   ctx.inject(['webServer'], (webCtx) => {
-    webCtx.effect(() => registerPanelRoutes(webCtx, logger, kimiMap, questions), 'frostfin.panelRoutes()')
+    webCtx.effect(() => registerPanelRoutes(webCtx, logger, kimiMap, questions, config), 'frostfin.panelRoutes()')
   })
   // 启动时预热模型目录：一次性 kimi 握手读 configOptions（失败静默——
   // 磁盘缓存/兜底先顶着，首个会话握手会补上）。

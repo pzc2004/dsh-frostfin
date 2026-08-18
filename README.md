@@ -144,7 +144,7 @@ npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin
 npx @deepseek-ai/dsh web
 ```
 
-装好后：新模式「月芒霜鳍鲸」自动成为默认模式；会话视图环多出「月芒霜鳍鲸」tab（kimi 会话列表，一键接入）；无需任何模型配置——DSH 的模型门禁由名义路由喂饱。
+装好后：新模式「月芒霜鳍鲸」自动成为默认模式；会话视图环多出「月芒霜鳍鲸」tab（kimi 会话列表，一键接入）；无需任何模型配置——DSH 的模型门禁由名义路由喂饱。**完整功能手册（面板/远程/命令/权限模式/FAQ）见 [docs/guide.md](docs/guide.md)。**
 
 **headless 也想要**：`npx @deepseek-ai/dsh plugin --profile headless add /path/to/dsh-frostfin`
 
@@ -156,8 +156,8 @@ npx @deepseek-ai/dsh web
 
 ## 路线图
 
-- **远程 kimi 会话接入**：把跑在服务器上的 Kimi Code 会话也纳入本地 DSH 管理——一个面板管所有机器上的 kimi。ACP 是 JSON-RPC over stdio，不挑传输：`ssh <主机> kimi acp` 把 stdio 骑在 SSH 通道上即可复用整座桥（转译、审批、提问、状态条不变），远程会话列表改走 ACP `session/list`。要补的是按主机配置的远程 spawn 接缝、绑定键的主机限定、面板按主机分组。
-- **上游诉求**：给 kimi ACP 适配器与 DSH 的待办清单见 [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md)（选项描述/问题头透传、后台任务状态推送、子代理事件转发、goal 可达性等）。
+- ~~远程 kimi 会话接入~~（**已落地**）：服务器上的 Kimi Code 会话已纳入本地 DSH 管理——读 `~/.ssh/config` 列出主机（VS Code 同款语义），一键连接即经 ssh+tmux 拉起远程 `kimi acp`（断线或本地关闭都不杀远程进程，重连原会话直接续）；远程会话按 主机 → 工作区 → 会话 三级展示、一键接入。前置：服务器装有 tmux 与 kimi 并完成 `/login`（缺失时面板会给出明确指引）。
+- **后续候选**：ControlMaster 连接复用、远程状态进状态条、kimi ACP 与 DSH 的上游诉求（见 [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) 与 [docs/upstream-dsh.md](docs/upstream-dsh.md)）。
 
 ## 状态
 

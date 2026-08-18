@@ -142,7 +142,7 @@ npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin
 npx @deepseek-ai/dsh web
 ```
 
-Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "Moonglow Frostfin Whale" tab (a list of local kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route.
+Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "月芒霜鳍鲸" tab (a list of local kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route. **The full feature guide (panel / remote / commands / permission modes / FAQ) lives at [docs/guide.md](docs/guide.md) (Chinese).**
 
 **Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add /path/to/dsh-frostfin`
 
@@ -154,8 +154,8 @@ Fully developed and verified on macOS. Linux should behave identically (POSIX se
 
 ## Roadmap
 
-- **Remote kimi sessions**: bring Kimi Code sessions running on servers into your local DSH — one panel for every kimi on every machine. ACP is JSON-RPC over stdio and doesn't care about the transport: `ssh <host> kimi acp` rides the streams over an SSH channel, so the whole bridge (translation, approvals, question modal, status dock) carries over unchanged; remote session listing switches to ACP `session/list`. What needs building: a per-host remote spawn seam, host-qualified session binding keys, and host grouping in the panel.
-- **Upstream asks**: the wishlists for kimi's ACP adapter and for DSH live in [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) (option-description/header passthrough, background-task status push, subagent event forwarding, goal reachability, and more).
+- ~~Remote kimi sessions~~ (**shipped**): Kimi Code sessions on servers are now managed from your local DSH — hosts are listed from `~/.ssh/config` (same semantics as VS Code), one click brings up a remote `kimi acp` over ssh+tmux (disconnects and local shutdowns never kill the remote process; reconnects resume the very same session); remote sessions are shown as host → workspace → session with one-click attach. Prerequisites: tmux and kimi on the server with `/login` done (the panel tells you exactly what's missing).
+- **Next candidates**: ControlMaster connection reuse, remote state in the status dock, upstream asks for kimi ACP and DSH (see [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) and [docs/upstream-dsh.md](docs/upstream-dsh.md)).
 
 ## Status
 

@@ -24,6 +24,8 @@ import type { KimiSessionMap, KimiSessionPrefs } from './kimi-sessions.js'
 import type { KimiModelCatalog } from './kimi-route.js'
 import { createPermissionBridge } from './permission.js'
 import type { QuestionRegistry } from './question.js'
+import { buildRemoteArgv, checkRemoteHost, sanitizeSessionName } from './remote.js'
+import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import { frostfinRouteSeed } from './kimi-route.js'
 
@@ -35,6 +37,8 @@ interface PublishPlan {
   readonly signal: AbortSignal | undefined
   /** resume 路径的既有绑定；新建会话为 undefined（握手后登记新 id）。 */
   readonly kimiSessionId: string | undefined
+  /** 远程线：会话的远程 ssh 主机；本地会话为 undefined。 */
+  readonly remoteHost: SshHostEntry | undefined
   readonly source: SessionStartSource
 }
 
@@ -97,6 +101,31 @@ export class FrostfinAgentFactory implements AgentFactory {
     this.questions = questions
   }
 
+  /** 按别名解析 ssh 主机（读 ~/.ssh/config 或其 Config 指向的文件）；找不到给清晰错误。 */
+  private resolveHost(alias: string): SshHostEntry {
+    const found = loadSshHosts(this.config.sshConfigFile).find(host => host.alias === alias)
+    if (found === undefined) {
+      throw new Error(`frostfin: ssh 配置里找不到主机 "${alias}"（${this.config.sshConfigFile} 中没有对应 Host 块）`)
+    }
+    return found
+  }
+
+  /** 体检过的主机与其 kimi 路径（每 DSH 进程缓存；失败不缓存——装好后下次即过）。 */
+  private readonly remoteHealth = new Map<string, string | undefined>()
+
+  /**
+   * 首次连接某主机前体检（ssh 认证 → tmux → kimi 路径解析），失败抛带人话的错。
+   * @returns 解析出的 kimi 绝对路径（PATH 裸名可用时为 undefined）。
+   */
+  private async checkRemoteCached(host: SshHostEntry): Promise<string | undefined> {
+    if (!this.remoteHealth.has(host.alias)) {
+      const health = await checkRemoteHost(host, this.config.sshCommand)
+      if (!health.ok) throw new Error(`frostfin: ${health.detail}`)
+      this.remoteHealth.set(host.alias, health.kimiPath)
+    }
+    return this.remoteHealth.get(host.alias)
+  }
+
   /**
    * 在一个调用方给的会话 id 上创建 agent 及其 kimi acp 进程。
    * @param ownerCtx - 拥有本次事务与存活句柄的调用方上下文。
@@ -114,12 +143,15 @@ export class FrostfinAgentFactory implements AgentFactory {
       seed: options.seed ?? frostfinRouteSeed(),
       ...options.meta === undefined ? {} : { meta: options.meta },
     })
+    // 远程线：meta.frostfinHost 标记远程会话（面板/命令接入远程 kimi 时给出）。
+    const hostAlias = (options.meta as { frostfinHost?: string } | undefined)?.frostfinHost
     return this.setupSpawnAndPublish(ownerCtx, session, {
       sessionId: options.sessionId,
       agentOptions: options.agentOptions ?? {},
       setup: options.setup,
       signal: options.signal,
       kimiSessionId: undefined,
+      remoteHost: hostAlias === undefined ? undefined : this.resolveHost(hostAlias),
       source: 'startup',
     })
   }
@@ -168,12 +200,15 @@ export class FrostfinAgentFactory implements AgentFactory {
     }
     const preparation = await persistence.prepare(options.resumeSessionId, options.signal)
     try {
+      // 远程线：绑定里记着主机别名就按远程恢复（别名失效给清晰错误）。
+      const hostAlias = this.kimiMap.getHost(options.resumeSessionId)
       return await this.setupSpawnAndPublish(ownerCtx, preparation.session, {
         sessionId: options.resumeSessionId,
         agentOptions: options.agentOptions ?? {},
         setup: options.setup,
         signal: options.signal,
         kimiSessionId,
+        remoteHost: hostAlias === undefined ? undefined : this.resolveHost(hostAlias),
         source: 'resume',
       })
     } finally {
@@ -186,12 +221,32 @@ export class FrostfinAgentFactory implements AgentFactory {
     // 起进程前刷新 kimi 配置（DSH 模型同步只在内容变化时写盘）。
     this.syncTrigger?.()
     const logger = this.ctx.logger('frostfin')
+    let command = this.config.command
+    let args = this.config.args
+    // 远程线：远程会话改走 ssh+tmux 的 shim 通道（先体检；tmux 会话名按 DSH
+    // 会话 id 稳定——重连复挂同一个活着的 pane，kimi 进程状态不丢）。
+    // 会话名带传输版本（v2=fifo 中继）：传输形态变更时绝不错挂旧形 pane
+    //（旧 pane 的输入管道不同，写上去了无人读——线上排障实录）。
+    const remote = agent.remoteHost
+    if (remote !== undefined) {
+      // 体检 + kimi 路径解析：非交互 ssh 的 PATH 常缺交互式配置，
+      // 默认安装位（~/.kimi-code/bin）解析出绝对路径优先于裸名。
+      const kimiPath = await this.checkRemoteCached(remote)
+      // 只在 command 是默认裸名 'kimi' 时用解析出的绝对路径（显式自定义的命令优先——
+      // 测试拿它指向夹具）。
+      const kimiCommand = kimiPath !== undefined && this.config.command === 'kimi' ? kimiPath : this.config.command
+      const argv = buildRemoteArgv(remote, sanitizeSessionName(`frostfin-v2-${agent.id}`), `${kimiCommand} ${this.config.args.join(' ')}`, this.config.sshCommand)
+      command = argv[0]!
+      args = argv.slice(1)
+    }
     let proc: AcpProcess | undefined
     proc = await startAcpProcess({
-      command: this.config.command,
-      args: this.config.args,
-      // kimi acp 需要绝对工作目录；会话没有 cwd 时退到宿主进程 cwd（M1 简化）。
-      cwd: agent.session.header.cwd ?? process.cwd(),
+      command,
+      args,
+      // 远程会话：spawn 的 cwd 必须本地存在（用宿主 cwd），ACP 会话的 cwd 走
+      // sessionCwd（会话 header.cwd 本就是远程路径）。本地会话两者一致。
+      cwd: remote !== undefined ? process.cwd() : (agent.session.header.cwd ?? process.cwd()),
+      sessionCwd: agent.session.header.cwd ?? process.cwd(),
       permission: this.config.permission,
       disposeEofGraceMs: this.config.disposeEofGraceMs,
       disposeGraceMs: this.config.disposeGraceMs,
@@ -231,11 +286,12 @@ export class FrostfinAgentFactory implements AgentFactory {
     }
     const agent = new FrostfinAgent(this.ctx, plan.sessionId, plan.agentOptions, session, {
       connect: (): Promise<AcpProcess> => this.startProcess(agent),
-      onBind: (kimiSessionId) => { this.kimiMap.set(plan.sessionId, kimiSessionId) },
+      onBind: (kimiSessionId) => { this.kimiMap.set(plan.sessionId, kimiSessionId, plan.remoteHost?.alias) },
       publishCatalog: (options) => { this.catalog.publish(options) },
       scopeModule: await this.hostScope,
       prefs: this.prefs,
       ...plan.kimiSessionId === undefined ? {} : { kimiSessionId: plan.kimiSessionId },
+      ...plan.remoteHost === undefined ? {} : { remoteHost: plan.remoteHost },
     })
 
     let acp: AcpProcess | undefined

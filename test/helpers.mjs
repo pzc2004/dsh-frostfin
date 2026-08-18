@@ -66,7 +66,7 @@ export function localSpawn(spec) {
  * @param options.onSpawn - 每次 spawn 回调（计数用）。
  * @returns ctx、插件 fiber、每次测试独立的 stateFile 路径等。
  */
-export async function bootPlugin({ permission = 'allow', approval, attachments, persistenceSeed, withCommands, withWebServer, advertiseKimiRoute = false, routeFakes, command, onSpawn } = {}) {
+export async function bootPlugin({ permission = 'allow', approval, attachments, persistenceSeed, withCommands, withWebServer, advertiseKimiRoute = false, routeFakes, command, onSpawn, sshConfigFile, sshCommand } = {}) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
@@ -101,6 +101,8 @@ export async function bootPlugin({ permission = 'allow', approval, attachments, 
     installPreset: false,
     syncModels: false,
     primeCatalog: false,
+    ...sshConfigFile === undefined ? {} : { sshConfigFile },
+    ...sshCommand === undefined ? {} : { sshCommand },
   })
   return { ctx, fiber, stateFile, commands, webServer }
 }

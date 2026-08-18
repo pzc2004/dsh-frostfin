@@ -30,6 +30,11 @@
 - **现状**：`handleQuestion` 对多问题只取第一个、`multiSelect` 降级为单选（`session.ts:1383-1396`）；线上 `q{n}_opt_*` 命名空间已预留多问题形态。
 - **建议**：一次请求携带全部问题（`q1_opt_*`、`q2_opt_*` …），客户端即可分组渲染，无需改线格式。
 
+## 6. 会话没有跨进程活性保护（远程/多客户端场景的实坑）
+
+- **现状**：kimi 会话落盘（`agent-core/src/session/store/session-store.ts`）没有任何锁或独占打开；`session/load` 也不介意目标会话正被另一个进程持有。两个进程加载同一会话时，内存态各自独立、JSONL 交错追加、state 文件互相覆盖——不崩但历史分叉。真实场景：TUI 里开着的会话被 ACP 客户端（如本插件）再接入，或两个 ACP 客户端抢同一会话。
+- **建议**：会话级锁文件（load 时占用、冲突报错），或 `session/list` / `session/load` 响应携带 `live`/`locked` 标志，让客户端至少能提示"该会话正被占用"。
+
 ---
 
 另有一份 DSH（DeepSeek Harness）侧的上游清单（审批结果词汇表缺"本会话允许"、空白会话切 preset 不重跑工厂等），与 kimi 无关，不在此列。

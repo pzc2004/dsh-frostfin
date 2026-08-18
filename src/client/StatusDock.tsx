@@ -15,6 +15,8 @@ interface KimiStatusPayload {
   size?: number
   alive?: boolean
   cwd?: string
+  /** 远程会话的主机别名（本地会话缺省）。 */
+  host?: string
   branch?: string
 }
 
@@ -59,7 +61,10 @@ export function StatusDock({ sessionId }: { sessionId: string }) {
   if (status.used !== undefined && status.size !== undefined && status.size > 0) {
     parts.push(`context: ${Math.round((status.used / status.size) * 100)}%（${formatTokens(status.used)}/${formatTokens(status.size)}）`)
   }
-  if (status.cwd !== undefined) parts.push(status.cwd)
+  if (status.cwd !== undefined) {
+    // 远程会话：目录前带主机名（VS Code 的 SSH: host 惯例）。
+    parts.push(status.host !== undefined ? `${status.host}:${status.cwd}` : status.cwd)
+  }
   if (status.alive === false) parts.push('kimi 进程未连接')
 
   return (

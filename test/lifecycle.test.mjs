@@ -50,7 +50,7 @@ test('首个 prompt 后 kimi 会话绑定写进映射文件（惰性启动）', 
   // 创建时不写绑定（还没起进程）
   assert.deepEqual(readMap(stateFile), {})
   await runOneTurn(agent, prompt('打个招呼'))
-  assert.deepEqual(readMap(stateFile), { [session.id]: 'scripted-session-1' })
+  assert.deepEqual(readMap(stateFile), { [session.id]: { kimiSessionId: 'scripted-session-1' } })
   await handle.dispose()
   await ctx.fiber.dispose()
 })
@@ -60,7 +60,7 @@ test('resume：spawn 后 session/load 重连并吞掉回放，日志零新增', 
   const seed = seedTurn()
   const { ctx, stateFile } = await bootPlugin({ permission: 'allow', persistenceSeed: seed })
   // 绑定事实先于 resume 存在（映射文件是 frostfin 的持久化面）。
-  writeFileSync(stateFile, JSON.stringify({ [dshId]: DEAD }))
+  writeFileSync(stateFile, JSON.stringify({ [dshId]: { kimiSessionId: DEAD } }))
 
   const handle = await ctx.agents.resume({ resumeSessionId: dshId })
   const { agent, session } = { agent: handle.agent, session: handle.agent.session }
@@ -72,7 +72,7 @@ test('resume：spawn 后 session/load 重连并吞掉回放，日志零新增', 
   const events = await runOneTurn(agent, prompt('继续'))
   assert.equal(events.at(-1).data.reason.kind, 'completed')
   assert.equal(events.at(-1).data.turn, 2)
-  assert.deepEqual(readMap(stateFile), { [dshId]: DEAD })
+  assert.deepEqual(readMap(stateFile), { [dshId]: { kimiSessionId: DEAD } })
 
   await handle.dispose()
   await ctx.fiber.dispose()
@@ -131,7 +131,7 @@ test('attach：回放按合法 turn/step 结构落盘，seq 连续，surface 可
   const result = events.find(event => event.type === 'tool/result')
   assert.equal(result.data.message.content[0].content[0].text, '(replayed history: tool output not retained by kimi)')
   // attach 后绑定改写为目标会话。
-  assert.deepEqual(readMap(stateFile), { [session.id]: DEAD })
+  assert.deepEqual(readMap(stateFile), { [session.id]: { kimiSessionId: DEAD } })
 
   // 重复 attach 报错；attach 后继续对话从 turn 4 接着编号（种子前奏占 turn 1）。
   await assert.rejects(agent.attachKimiSession(DEAD), /已绑定/)
