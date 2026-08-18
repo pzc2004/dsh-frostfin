@@ -13,11 +13,12 @@ await page.getByText('月芒霜鳍鲸', { exact: true }).nth(1).click()
 await page.waitForTimeout(2000)
 
 // 找到目标主机那一行的「连接」按钮并点击
-await page.evaluate(() => {
-  const rows = [...document.querySelectorAll('div')].filter(d => d.textContent?.startsWith(HOST) && d.querySelector('button'))
+// （注意：evaluate 回调是序列化到浏览器里跑的，Node 侧变量必须显式传参——HOST 不传就是 ReferenceError）
+await page.evaluate((h) => {
+  const rows = [...document.querySelectorAll('div')].filter(d => d.textContent?.startsWith(h) && d.querySelector('button'))
   const row = rows.sort((a, b) => a.textContent.length - b.textContent.length)[0]
   row?.querySelector('button')?.click()
-})
+}, HOST)
 console.log('已点击 ' + HOST + ' 的连接，等待…')
 
 // 连接 = 体检 + 起探针，最长给 60 秒
