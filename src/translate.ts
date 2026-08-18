@@ -197,6 +197,8 @@ class AcpTranslator implements Translator {
   private text = ''
   private reasoning = ''
   private readonly pending = new Map<string, ToolCallState>()
+  /** 流式懒创建（pending 且无 rawInput 的 tool_call）挂起集：存创建报文，等 started 补发带完整入参再落卡。 */
+  private readonly heldCalls = new Map<string, AcpToolCall>()
   private closed = false
 
   constructor(readonly turn: number) {}
@@ -256,6 +258,20 @@ class AcpTranslator implements Translator {
     this.closed = true
     const events: TranslatedEvent[] = []
     events.push(...this.flushAssistant())
+    // 挂起的懒创建随 turn 结束（取消/子进程死亡）：补落 tool/call，
+    // 交给下面的悬挂循环统一合成错误结果——不让它无声消失。
+    for (const [id, call] of this.heldCalls) {
+      if (this.pending.has(id)) continue
+      events.push(...this.openStepIfNeeded())
+      const state: ToolCallState = {
+        callId: brandCallId(id),
+        name: call.name ?? call.title ?? 'unknown',
+        arguments: stringifyArguments(call.rawInput),
+      }
+      this.pending.set(id, state)
+      events.push({ type: 'tool/call', turn: this.turn, step: this.step, callId: state.callId, name: state.name, arguments: state.arguments })
+    }
+    this.heldCalls.clear()
     for (const call of this.pending.values()) {
       // turn 结束时仍悬挂的调用（取消 / 子进程死亡）：合成错误结果，
       // 保住 invariant 的 call→result 配对纪律。
@@ -283,6 +299,13 @@ class AcpTranslator implements Translator {
 
   /** 新 tool_call：先冲刷 assistant 聚合（保住 message 在 call 前的次序），再落 call。 */
   private onToolCall(call: AcpToolCall): TranslatedEvent[] {
+    // 流式懒创建（参数还在流、rawInput 缺席）：挂起等 started 补发带完整入参再落卡——
+    // 此刻落盘只能快照到 '{}'，而 DSH 的 tool/call 落盘即不可变（kimi ACP 懒创建路径）。
+    // in_progress 首发不挂起、立即落卡：那是真 started，不会再有更好的入参来了（如无参工具）。
+    if (call.rawInput === undefined && call.status !== 'in_progress' && call.status !== 'completed' && call.status !== 'failed') {
+      this.heldCalls.set(call.toolCallId, call)
+      return []
+    }
     const events = this.openStepIfNeeded()
     events.push(...this.flushAssistant())
     const state: ToolCallState = {
@@ -300,16 +323,36 @@ class AcpTranslator implements Translator {
     return events
   }
 
-  /** tool_call_update：仅终态（completed/failed）落盘为 tool/result。 */
+  /**
+   * tool_call_update：挂起懒创建的补发（in_progress、带完整 rawInput）落 tool/call；
+   * 终态（completed/failed）落盘为 tool/result。
+   */
   private onToolCallUpdate(update: ToolCallUpdate): TranslatedEvent[] {
-    if (update.status !== 'completed' && update.status !== 'failed') return []
-    const events = this.openStepIfNeeded()
-    if (!this.pending.has(update.toolCallId)) {
-      // 防御：没见过 tool/call 的终态更新——不变量要求 result 必须有同 step 的 call 先行。
+    const held = this.heldCalls.get(update.toolCallId)
+    if (update.status !== 'completed' && update.status !== 'failed') {
+      // 非终态更新只在一种情况落盘：挂起的懒创建等来了带完整 rawInput 的 started 补发——
+      // 此刻才落卡（完整入参），后续审批弹窗的 callId 锚定成立；补发无入参则继续挂起。
+      if (held === undefined || update.rawInput === undefined) return []
+      this.heldCalls.delete(update.toolCallId)
+      const events = this.openStepIfNeeded()
       events.push(...this.flushAssistant())
       const state: ToolCallState = {
         callId: brandCallId(update.toolCallId),
-        name: update.name ?? update.title ?? 'unknown',
+        name: update.name ?? update.title ?? held.name ?? held.title ?? 'unknown',
+        arguments: stringifyArguments(update.rawInput),
+      }
+      this.pending.set(update.toolCallId, state)
+      events.push({ type: 'tool/call', turn: this.turn, step: this.step, callId: state.callId, name: state.name, arguments: state.arguments })
+      return events
+    }
+    this.heldCalls.delete(update.toolCallId)
+    const events = this.openStepIfNeeded()
+    if (!this.pending.has(update.toolCallId)) {
+      // 防御：没见过 tool/call 的终态更新（含挂起直达终态）——不变量要求 result 必须有同 step 的 call 先行。
+      events.push(...this.flushAssistant())
+      const state: ToolCallState = {
+        callId: brandCallId(update.toolCallId),
+        name: update.name ?? update.title ?? held?.name ?? held?.title ?? 'unknown',
         arguments: stringifyArguments(update.rawInput),
       }
       this.pending.set(update.toolCallId, state)

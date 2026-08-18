@@ -70,6 +70,66 @@ test('tool_call 到达时先冲刷 assistant/message，再落 tool/call', () => 
   })
 })
 
+test('流式懒创建：pending 空创建挂起，started 补发带完整入参才落 tool/call', () => {
+  const translator = createTranslator(TURN)
+  translator.begin()
+  translator.push({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '读一下文件' } })
+  // 懒创建：pending、无 rawInput（参数还在流）——不落卡。
+  const held = translator.push({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call-1',
+    title: 'Read file',
+    status: 'pending',
+    content: [{ type: 'content', content: { type: 'text', text: '{"path' } }],
+  })
+  assert.deepEqual(types(held), [])
+  // started 补发（in_progress + 完整 rawInput）：此刻落卡，完整入参。
+  const upgraded = translator.push({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'call-1',
+    title: 'Read file',
+    status: 'in_progress',
+    rawInput: { path: '/tmp/a.txt' },
+  })
+  assert.deepEqual(types(upgraded), ['assistant/message', 'tool/call'])
+  assert.deepEqual(upgraded[1], {
+    type: 'tool/call',
+    turn: TURN,
+    step: 1,
+    callId: 'call-1',
+    name: 'Read file',
+    arguments: '{"path":"/tmp/a.txt"}',
+  })
+  // 终态：正常落 result + 关 step；全程只落了一条 tool/call。
+  const done = translator.push({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'call-1',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: '文件内容' } }],
+  })
+  assert.deepEqual(types(done), ['tool/result', 'step/end'])
+})
+
+test('懒创建直达终态（升级缺席）：防御分支落 call+result', () => {
+  const translator = createTranslator(TURN)
+  translator.begin()
+  translator.push({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call-1',
+    title: 'Bash',
+    status: 'pending',
+  })
+  const events = translator.push({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'call-1',
+    status: 'completed',
+    rawInput: { command: 'ls' },
+    content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
+  })
+  assert.deepEqual(types(events), ['tool/call', 'tool/result', 'step/end'])
+  assert.equal(events[0].arguments, '{"command":"ls"}')
+})
+
 test('tool_call_update 终态 → tool/result；悬挂清零后关闭 step，新内容开新 step', () => {
   const translator = createTranslator(TURN)
   translator.begin()
