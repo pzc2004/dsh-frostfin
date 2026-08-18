@@ -157,11 +157,11 @@ npx @deepseek-ai/dsh web
 ## 路线图
 
 - ~~远程 kimi 会话接入~~（**已落地**）：服务器上的 Kimi Code 会话已纳入本地 DSH 管理——读 `~/.ssh/config` 列出主机（VS Code 同款语义），一键连接即经 ssh+tmux 拉起远程 `kimi acp`（断线或本地关闭都不杀远程进程，重连原会话直接续）；远程会话按 主机 → 工作区 → 会话 三级展示、一键接入。前置：服务器装有 tmux 与 kimi 并完成 `/login`（缺失时面板会给出明确指引）。
-- **后续候选**：ControlMaster 连接复用、远程状态进状态条、kimi ACP 与 DSH 的上游诉求（见 [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) 与 [docs/upstream-dsh.md](docs/upstream-dsh.md)）。
+- **后续候选**：ControlMaster 连接复用、kimi ACP 与 DSH 的上游诉求（见 [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) 与 [docs/upstream-dsh.md](docs/upstream-dsh.md)）。
 
 ## 状态
 
-可用但早期。质量基线：58 个自动化测试（纯转译单测 + 驱动 script 化 ACP 子进程的端到端，不经真 kimi）+ 浏览器实测（流式回话、审批弹窗、提问模态框、图片理解、状态条、斜杠命令）。对锁 `@deepseek-ai/dsh@0.1.0-rc.6` 与 kimi Code 0.36.x——两边都在快速迭代，升级请当作主动动作。设计稿见 [docs/design-v0.1.md](docs/design-v0.1.md)（M1-M3 时代写成，M4+ 的实现笔记在代码注释里）。
+可用但早期。质量基线：82 个自动化测试（纯转译单测 + 驱动 script 化 ACP 子进程的端到端，不经真 kimi）+ 浏览器实测（流式回话、审批弹窗、提问模态框、图片理解、状态条、斜杠命令）。对锁 `@deepseek-ai/dsh@0.1.0-rc.6` 与 kimi Code 0.36.x——两边都在快速迭代，升级请当作主动动作。设计稿见 [docs/design-v0.1.md](docs/design-v0.1.md)（M1-M3 时代写成，M4+ 的实现笔记在代码注释里）。
 
 ## License
 

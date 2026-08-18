@@ -100,6 +100,8 @@ function makeAgent(conn) {
       })
     },
     deleteSession(params) {
+      // 未知 id 报错（对齐真 kimi：delete 非 best-effort，未知 id 抛 invalid_params）。
+      if (params.sessionId === 'session_no-such') return Promise.reject(new Error('Unknown sessionId'))
       deleted.add(params.sessionId)
       if (stateFile !== undefined && stateFile !== '') appendFileSync(stateFile, params.sessionId + '\n')
       return Promise.resolve({})

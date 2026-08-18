@@ -43,7 +43,7 @@ pnpm test           # node --test test/*.test.mjs
 
 **重要**：测试直接 import `../lib/*.js`（构建产物），改完 `src/` 必须先 `pnpm build` 再 `pnpm test`，否则测的是旧代码。
 
-最近一次验证：`pnpm build` 通过，`pnpm test` 79 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
+最近一次验证：`pnpm build` 通过，`pnpm test` 82 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
 
 ## 目录结构与模块划分
 
@@ -69,7 +69,7 @@ src/                  宿主半身（Node 侧，tsc 编译到 lib/）
 src/client/           浏览器半身（React TSX，esbuild 打包；tsc 排除此目录）
   index.ts            槽位注册：会话面板 tab、状态条 dock、提问模态框
   SessionsPanel.tsx   「月芒霜鳍鲸」tab：本地/远程 kimi 会话列表与接入
-  StatusDock.tsx      输入框下方状态条（模型/thinking/模式/上下文占用/cwd/git 分支，3 秒轮询）
+  StatusDock.tsx      输入框下方状态条（模型/thinking/模式/git 分支/上下文占用/cwd，3 秒轮询）
   QuestionModal.tsx   AskUserQuestion 多选模态框
 presets/frostfin/     「月芒霜鳍鲸」preset 定义（preset.yml + agent.cordis.yml，最小 persona 行）
 cordis.patch.yml      DSH profile 补丁：insert frostfin 行、agent-presets 默认改为 frostfin、禁用 agent-loop

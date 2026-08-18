@@ -1,7 +1,9 @@
 // M3 会话生命周期端到端：映射文件、resume 吞回放、attach 写回放、进程自愈重连。
 // 对端是 scripted ACP 子进程（session/list + session/load + 'boom' 崩溃剧本）。
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { foldSurface } from '@deepseek-ai/dsh-session'
@@ -161,6 +163,18 @@ test('进程自愈：崩溃的 turn 记 error，下一个 prompt 自动重连并
   const replayed = session.events.filter(event =>
     event.type === 'user/message' && event.data.content.some(block => block.type === 'text' && block.text.includes('回放')))
   assert.equal(replayed.length, 0)
+})
+
+test('绑定映射旧格式（字符串形）自动迁移读取', async () => {
+  // 存量用户 ~/.frostfin/kimi-sessions.json 是 "dshId": "kimiId" 字符串形——
+  // 升级后必须能读（迁移写坏 = 绑定全丢）。
+  const file = join(mkdtempSync(join(tmpdir(), 'frostfin-migrate-')), 'm.json')
+  writeFileSync(file, JSON.stringify({ 'dsh-1': 'session_old' }))
+  const { KimiSessionMap } = await import('../lib/kimi-sessions.js')
+  const map = new KimiSessionMap(file)
+  assert.equal(map.get('dsh-1'), 'session_old')
+  assert.equal(map.getHost('dsh-1'), undefined)
+  assert.equal(map.keyOf('session_old'), 'dsh-1')
 })
 
 test('重连端点：无绑定跳过（惰性不破）；崩溃后 POST reconnect 重连成功', async (t) => {

@@ -130,6 +130,29 @@ test('懒创建直达终态（升级缺席）：防御分支落 call+result', ()
   assert.equal(events[0].arguments, '{"command":"ls"}')
 })
 
+test('懒创建挂起存活到 close：补落 tool/call + 合成错误 result（取消/进程死亡的收口）', () => {
+  const translator = createTranslator(TURN)
+  translator.begin()
+  translator.push({ sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Read', status: 'pending' })
+  const events = translator.close({ kind: 'aborted', reason: { kind: 'user' } })
+  assert.deepEqual(types(events), ['tool/call', 'tool/result', 'step/end', 'turn/end'])
+  assert.equal(events[0].callId, 'call-1')
+  assert.equal(events[1].callId, 'call-1')
+  assert.equal(events[1].message.content[0].isError, true)
+  assert.deepEqual(events[1].error, { name: 'AbortError', code: 'FROSTFIN_TOOL_INCOMPLETE' })
+})
+
+test('懒创建挂起后同 id 正式创建到达：挂起条目被清，不重复落卡', () => {
+  const translator = createTranslator(TURN)
+  translator.begin()
+  translator.push({ sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Read', status: 'pending' })
+  // 对端违规重发：同 id 的正式创建（带 rawInput）。
+  const created = translator.push({ sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Read', status: 'in_progress', rawInput: { path: '/x' } })
+  assert.deepEqual(types(created), ['tool/call'])
+  // 后续带入参的非终态更新不得再落第二条 tool/call。
+  assert.deepEqual(translator.push({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'in_progress', rawInput: { path: '/x' } }), [])
+})
+
 test('tool_call_update 终态 → tool/result；悬挂清零后关闭 step，新内容开新 step', () => {
   const translator = createTranslator(TURN)
   translator.begin()

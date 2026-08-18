@@ -656,7 +656,16 @@ export class FrostfinAgent implements Agent {
       } catch (error: unknown) {
         if (signal.aborted) throw error
         // 进程死亡/连接断裂级的失败：重连一次并重试这个 prompt（进程自愈）。
-        const recovered = await this.tryReconnect()
+        // 重连里的 session/load 回放必须吞掉——activeTranslator 还挂在失败 turn 上，
+        // 不吞会把整本历史泄进这个 turn 的日志（replayCollector 优先于转译路由）。
+        const sink: SessionUpdate[] = []
+        this.replayCollector = sink
+        let recovered: boolean
+        try {
+          recovered = await this.tryReconnect()
+        } finally {
+          this.replayCollector = undefined
+        }
         if (!recovered) throw error
         const retry = this.acp
         if (retry === undefined) throw error

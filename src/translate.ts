@@ -306,6 +306,9 @@ class AcpTranslator implements Translator {
       this.heldCalls.set(call.toolCallId, call)
       return []
     }
+    // 同 id 的正式创建到达：清掉可能存在的挂起条目——不然后续带入参的更新会
+    // 命中升级分支再落一条同 callId 的 tool/call（对端重发创建的防御）。
+    this.heldCalls.delete(call.toolCallId)
     const events = this.openStepIfNeeded()
     events.push(...this.flushAssistant())
     const state: ToolCallState = {
@@ -324,7 +327,7 @@ class AcpTranslator implements Translator {
   }
 
   /**
-   * tool_call_update：挂起懒创建的补发（in_progress、带完整 rawInput）落 tool/call；
+   * tool_call_update：挂起懒创建的补发（非终态、带完整 rawInput）落 tool/call；
    * 终态（completed/failed）落盘为 tool/result。
    */
   private onToolCallUpdate(update: ToolCallUpdate): TranslatedEvent[] {

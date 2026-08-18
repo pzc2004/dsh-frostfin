@@ -28,6 +28,8 @@ interface RemoteSessionItem {
   updatedAt: string | null
   /** 疑似被活 TUI 持有（同工作区有前台 kimi）——接入前弹确认。 */
   held?: boolean
+  /** 已绑定到某 DSH 会话时的会话 id（显示「已接入/打开」并隐藏删除）。 */
+  boundDshId?: string
 }
 
 /** 远程主机的面板状态：idle 未连接 → connecting → online / error。 */
@@ -72,8 +74,8 @@ function shortCwd(cwd: string): string {
 }
 
 /** 按工作区分组：组内保持时间倒序，组按最新活动排序。 */
-function groupByCwd(entries: readonly KimiSessionEntry[]): [string, KimiSessionEntry[]][] {
-  const groups = new Map<string, KimiSessionEntry[]>()
+function groupByCwd<T extends { cwd: string; updatedAt: string | null }>(entries: readonly T[]): [string, T[]][] {
+  const groups = new Map<string, T[]>()
   for (const entry of entries) {
     const key = entry.cwd === '' ? '（未知目录）' : entry.cwd
     const list = groups.get(key)
@@ -423,14 +425,24 @@ export function SessionsPanel({ onOpen }: SessionsPanelProps) {
                       </div>
                       <div style={styles.meta}>{formatTime(entry.updatedAt)}</div>
                     </div>
-                    <button
-                      style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
-                      disabled={busy !== null}
-                      onClick={() => void openRemote(alias, entry)}
-                    >
-                      {busy === `${alias}/${entry.sessionId}` ? '接入中…' : '接入'}
-                    </button>
-                    {entry.held !== true && (
+                    {entry.boundDshId !== undefined && <span style={styles.badge}>已接入</span>}
+                    {entry.boundDshId !== undefined ? (
+                      <button
+                        style={styles.button}
+                        onClick={() => onOpen(entry.boundDshId as string)}
+                      >
+                        打开
+                      </button>
+                    ) : (
+                      <button
+                        style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
+                        disabled={busy !== null}
+                        onClick={() => void openRemote(alias, entry)}
+                      >
+                        {busy === `${alias}/${entry.sessionId}` ? '接入中…' : '接入'}
+                      </button>
+                    )}
+                    {entry.held !== true && entry.boundDshId === undefined && (
                       <button
                         style={{ ...styles.button, opacity: busy === null ? 1 : 0.6 }}
                         disabled={busy !== null}

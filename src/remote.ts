@@ -28,7 +28,8 @@ export function sanitizeSessionName(raw: string): string {
 const PANE_TERMIOS = '-echo -onlcr icrnl'
 
 /**
- * 构建远程 shim（sh -c 的负载；整体无单引号，可整体包进 ssh 的单引号命令串）。
+ * 构建远程 shim（远端登录 shell 执行的负载；作为单个 argv 元素经 ssh 逐字传递，
+ * 无本地 shell 拼接，内容不受引号限制）。
  * @param sessionName - tmux 会话名（经 sanitizeSessionName）。
  * @param kimiCmd - pane 里启动 kimi 的命令（默认 `kimi acp`）。
  */
@@ -41,7 +42,7 @@ export function buildShimCommand(sessionName: string, kimiCmd: string): string {
   // pipe 正常、fifo 直读卡死、cat 中继后正常）。
   const paneCmd = `stty ${PANE_TERMIOS}; exec sh -c '(exec 3<>\\"${inf}\\" && cat \\"${inf}\\") | exec ${kimiCmd}'`
   return [
-    `tmux has-session -t "${sessionName}" 2>/dev/null || { rm -f "${inf}"; mkfifo "${inf}"; tmux new-session -d -s "${sessionName}" "${paneCmd}"; }`,
+    `tmux has-session -t "${sessionName}" 2>/dev/null || { rm -f "${inf}"; mkfifo -m 600 "${inf}"; tmux new-session -d -s "${sessionName}" "${paneCmd}"; }`,
     // kimi 存活判定：pane 根进程（管道包装 sh）的子进程 ≥2 = 左侧 cat + 右侧 kimi 都在。
     // 不能用 pane_current_command——管道形态的前台组长永远是包装 sh（上报 sh/bash），
     // 活着和死透显示一模一样（实测）。
@@ -53,7 +54,11 @@ export function buildShimCommand(sessionName: string, kimiCmd: string): string {
     // 不重建会话：kimi 会话在磁盘上，session/load 回放照常。
     `alive || tmux respawn-pane -k -t "${sessionName}" "${paneCmd}"`,
     `for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do alive && break; sleep 0.3; done`,
-    `rm -f "${outf}"; mkfifo "${outf}"`,
+    // 输入 fifo 被 tmp 清理器删掉时（fifo 的 mtime 不随数据流更新，长活 pane 会赶上
+    // systemd-tmpfiles 的 10 天清理）：cat > 会创建同名普通文件、输入静默黑洞——
+    // 重建 fifo 并 respawn 重绑 pane 的 fd3。
+    `[ -p "${inf}" ] || { rm -f "${inf}"; mkfifo -m 600 "${inf}"; tmux respawn-pane -k -t "${sessionName}" "${paneCmd}"; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do alive && break; sleep 0.3; done; }`,
+    `rm -f "${outf}"; mkfifo -m 600 "${outf}"`,
     // 不带 -o：直接顶掉可能残留的死 pipe——旧 shim 的 cat 被杀后 tmux 不一定及时发现
     // 读取端没了，-o 会把 pane 输出写进已删除的 inode，新 shim 永远收不到（实测黑洞）。
     `tmux pipe-pane -t "${sessionName}" "cat > ${outf}"`,
@@ -131,6 +136,8 @@ export function checkRemoteHost(host: SshHostEntry, sshBin = 'ssh'): Promise<Rem
     '[ -z "$kimi" ] && [ -x "$HOME/.kimi-code/bin/kimi" ] && kimi="$HOME/.kimi-code/bin/kimi"',
     '[ -z "$kimi" ] && kimi=$($SHELL -lc "command -v kimi" 2>/dev/null || true)',
     'command -v tmux >/dev/null 2>&1 || echo NO_TMUX',
+    // shim 的存活判定（alive）用 pgrep -P 数 pane 子进程——缺 procps 的极简远程没有它。
+    'command -v pgrep >/dev/null 2>&1 || echo NO_PGREP',
     '[ -z "$kimi" ] && echo NO_KIMI',
     '[ -n "$kimi" ] && echo "KIMI_PATH=$kimi"',
     'echo "PROBE_HOME=$HOME"',
@@ -150,11 +157,18 @@ export function checkRemoteHost(host: SshHostEntry, sshBin = 'ssh'): Promise<Rem
         resolve({ ok: false, detail: `远程主机 ${host.alias} 上没有 tmux——请先安装（如 apt/yum install tmux）。` })
         return
       }
+      if (stdout.includes('NO_PGREP')) {
+        resolve({ ok: false, detail: `远程主机 ${host.alias} 上没有 pgrep（procps 包）——死 pane 自愈的存活判定依赖它，请安装后重试。` })
+        return
+      }
       if (stdout.includes('NO_KIMI')) {
         resolve({ ok: false, detail: `远程主机 ${host.alias} 上没有 kimi——请按官方脚本安装并在其上跑一次 /login。` })
         return
       }
-      const kimiPath = /^KIMI_PATH=(.+)$/m.exec(stdout)?.[1]?.trim()
+      const rawKimiPath = /^KIMI_PATH=(.+)$/m.exec(stdout)?.[1]?.trim()
+      // 白名单校验：远端 stdout 解析出的路径只接受安全字符——含空格/引号的路径
+      // 会在 pane 命令行里被词分割或破引号（宁可回退裸名也不拼危险值）。
+      const kimiPath = rawKimiPath !== undefined && /^\/[A-Za-z0-9._/-]+$/.test(rawKimiPath) ? rawKimiPath : undefined
       const homeDir = /^PROBE_HOME=(.+)$/m.exec(stdout)?.[1]?.trim()
       resolve({
         ok: true,

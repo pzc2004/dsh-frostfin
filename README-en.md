@@ -142,7 +142,7 @@ npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin
 npx @deepseek-ai/dsh web
 ```
 
-Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "月芒霜鳍鲸" tab (a list of local kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route. **The full feature guide (panel / remote / commands / permission modes / FAQ) lives at [docs/guide.md](docs/guide.md) (Chinese).**
+Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "月芒霜鳍鲸" tab (local and remote kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route. **The full feature guide (panel / remote / commands / permission modes / FAQ) lives at [docs/guide.md](docs/guide.md) (Chinese).**
 
 **Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add /path/to/dsh-frostfin`
 
@@ -155,11 +155,11 @@ Fully developed and verified on macOS. Linux should behave identically (POSIX se
 ## Roadmap
 
 - ~~Remote kimi sessions~~ (**shipped**): Kimi Code sessions on servers are now managed from your local DSH — hosts are listed from `~/.ssh/config` (same semantics as VS Code), one click brings up a remote `kimi acp` over ssh+tmux (disconnects and local shutdowns never kill the remote process; reconnects resume the very same session); remote sessions are shown as host → workspace → session with one-click attach. Prerequisites: tmux and kimi on the server with `/login` done (the panel tells you exactly what's missing).
-- **Next candidates**: ControlMaster connection reuse, remote state in the status dock, upstream asks for kimi ACP and DSH (see [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) and [docs/upstream-dsh.md](docs/upstream-dsh.md)).
+- **Next candidates**: ControlMaster connection reuse, upstream asks for kimi ACP and DSH (see [docs/upstream-kimi-acp.md](docs/upstream-kimi-acp.md) and [docs/upstream-dsh.md](docs/upstream-dsh.md)).
 
 ## Status
 
-Usable but early. Quality baseline: 58 automated tests (pure translation unit tests + end-to-end runs driving a scripted ACP child process, without the real kimi) plus real-browser verification (streaming replies, approval dialog, question modal, image understanding, status bar, slash commands). Pinned to `@deepseek-ai/dsh@0.1.0-rc.6` and Kimi Code 0.36.x — both sides iterate fast, so treat upgrades as deliberate actions. See the design doc at [docs/design-v0.1.md](docs/design-v0.1.md) (written in the M1–M3 era; implementation notes for M4+ live in code comments).
+Usable but early. Quality baseline: 82 automated tests (pure translation unit tests + end-to-end runs driving a scripted ACP child process, without the real kimi) plus real-browser verification (streaming replies, approval dialog, question modal, image understanding, status bar, slash commands). Pinned to `@deepseek-ai/dsh@0.1.0-rc.6` and Kimi Code 0.36.x — both sides iterate fast, so treat upgrades as deliberate actions. See the design doc at [docs/design-v0.1.md](docs/design-v0.1.md) (written in the M1–M3 era; implementation notes for M4+ live in code comments).
 
 ## License
 

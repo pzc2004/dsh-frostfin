@@ -46,6 +46,7 @@ export function StatusDock({ sessionId }: { sessionId: string }) {
     let stopped = false
     guard.current = { at: 0, inFlight: false }
     setAuto('idle')
+    setStatus(null) // 切会话即清——别在新会话首次轮询返回前显示上一个会话的状态。
     const load = async (): Promise<void> => {
       try {
         const res = await fetch(`/plugins/frostfin/status?sessionId=${encodeURIComponent(sessionId)}`)
@@ -62,7 +63,6 @@ export function StatusDock({ sessionId }: { sessionId: string }) {
       const g = guard.current
       if (g.inFlight || Date.now() - g.at < 30_000) return
       g.inFlight = true
-      g.at = Date.now()
       setAuto('connecting')
       try {
         const res = await fetch('/plugins/frostfin/reconnect', {
@@ -76,6 +76,7 @@ export function StatusDock({ sessionId }: { sessionId: string }) {
         if (!stopped) setAuto('failed')
       } finally {
         g.inFlight = false
+        g.at = Date.now() // 冷却从本次尝试结束时起算（慢重连不会压缩重试间隔）。
       }
     }
     void load()
