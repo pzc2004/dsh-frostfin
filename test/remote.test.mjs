@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { buildRemoteArgv, buildShimCommand, checkRemoteHost, expandRemoteHome, parseLiveKimiCwds, posixSshTmux, remoteTargetOf, remoteTransport, sanitizeSessionName } from '../lib/remote.js'
+import { buildRemoteArgv, buildShimCommand, checkRemoteHost, expandRemoteHome, hostDriverFor, parseLiveKimiCwds, remoteTargetOf, sanitizeSessionName } from '../lib/remote.js'
 import { startAcpProcess } from '../lib/acp-process.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { bootPlugin, FIXTURE, localSpawn, mockGet, mockPost, mockResponse } from './helpers.mjs'
@@ -59,11 +59,18 @@ test('remoteTargetOf / buildRemoteArgv：目标串与参数顺序', () => {
   assert.equal(argv.at(-1), buildShimCommand('s1', 'kimi acp'))
 })
 
-test('remoteTransport 分派点：当前唯一实现是 posixSshTmux，且委托等价', () => {
-  assert.equal(remoteTransport, posixSshTmux)
-  assert.equal(remoteTransport.name, 'posix-ssh-tmux')
-  // 委托等价：经分派点与直调具体函数产出一致（缺省 sshBin 走默认 'ssh'）
-  assert.deepEqual(remoteTransport.buildArgv(HOST, 's1', 'kimi acp'), buildRemoteArgv(HOST, 's1', 'kimi acp'))
+test('hostDriverFor 分派点：host 在场走 posix-ssh-tmux，缺省走 posix-local，且委托等价', () => {
+  const remote = hostDriverFor(HOST)
+  assert.equal(remote.name, 'posix-ssh-tmux')
+  // 远程委托等价：agentSpawnSpec 与直调 buildRemoteArgv 产出一致（缺省 sshBin 走默认 'ssh'）
+  const spec = remote.agentSpawnSpec('s1', 'kimi', ['acp'])
+  const argv = buildRemoteArgv(HOST, 's1', 'kimi acp')
+  assert.equal(spec.command, argv[0])
+  assert.deepEqual(spec.args, argv.slice(1))
+  // 本地：posix-local 直起，命令与 args 原样（不掺 shim）。
+  const local = hostDriverFor(undefined)
+  assert.equal(local.name, 'posix-local')
+  assert.deepEqual(local.agentSpawnSpec('whatever', 'kimi', ['acp']), { command: 'kimi', args: ['acp'] })
 })
 
 test('parseLiveKimiCwds：kimi 前台 pane 的 cwd 入选，frostfin pane 与 shell pane 排除', () => {
@@ -88,11 +95,11 @@ test('expandRemoteHome：~ 与 ~/x 展开为远程 home，其余原样', () => {
   assert.equal(expandRemoteHome('~/proj', undefined), '~/proj') // home 未知原样
 })
 
-test('remoteTransport.probeLiveCwds：经 ssh 探活并解析；失败回落空列表', async () => {
+test('hostDriver.probeLiveCwds：经 ssh 探活并解析；失败回落空列表', async () => {
   const live = fakeSsh('#!/bin/sh\necho "work|kimi-code|/home/u/proj"\necho "frostfin-v2-p|kimi-code|/home/u"')
-  assert.deepEqual(await remoteTransport.probeLiveCwds(HOST, live), ['/home/u/proj'])
+  assert.deepEqual(await hostDriverFor(HOST, live).probeLiveCwds(), ['/home/u/proj'])
   const dead = fakeSsh('#!/bin/sh\nexit 255')
-  assert.deepEqual(await remoteTransport.probeLiveCwds(HOST, dead), [])
+  assert.deepEqual(await hostDriverFor(HOST, dead).probeLiveCwds(), [])
 })
 
 /** 造一个假 ssh 可执行（记录参数、按剧本输出/退出码）。 */
@@ -248,7 +255,7 @@ test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑�
 test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote / delete-session 全链', { skip: !hasTmux }, async (t) => {
   // 假 ssh：活 TUI 探针（含 pane_current_path 的 list-panes；shim 存活闸不含此字段）回剧本行
   //（cwd 可被 FROSTFIN_PROBE_CWD 覆盖，测 held 负向）；其余命令本地执行。
-  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *pane_current_path*) printf "work|kimi-code|%s\\n" "${FROSTFIN_PROBE_CWD:-$PWD}" ;; *) exec sh -c "$last" ;; esac')
+  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *pane_current_path*) printf "work|kimi-code|%s\\n" "${FROSTFIN_PROBE_CWD:-$PWD}" ;; *rev-parse*) echo main ;; *) exec sh -c "$last" ;; esac')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
   const sshConfigFile = join(sshConfigDir, 'config')
   writeFileSync(sshConfigFile, 'Host spike-local\n  HostName spike.local.example.com\nHost spike-elsewhere\n  HostName spike2.example.com\n')
@@ -319,6 +326,12 @@ test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote
     mockGet('/plugins/frostfin/remote-sessions?host=spike-local'), listBound)
   const boundRow = listBound.body.sessions.find(item => item.sessionId === 'session_scripted-dead')
   assert.equal(boundRow?.boundDshId, openRes.body.sessionId)
+
+  // 远程会话状态条：git 分支经 ssh 查远程（假 ssh 的 rev-parse 剧本回 main）。
+  const statusRes = mockResponse()
+  await webServer.routes.get('/plugins/frostfin/status').handler(
+    mockGet(`/plugins/frostfin/status?sessionId=${openRes.body.sessionId}`), statusRes)
+  assert.equal(statusRes.body.branch, 'main')
 
   // delete-session 守卫：已绑定的 409；不存在的（夹具对齐真 kimi 报错）409。
   const delBound = mockResponse()

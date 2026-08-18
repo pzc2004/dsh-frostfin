@@ -25,7 +25,7 @@ import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import type { KimiSessionMap } from './kimi-sessions.js'
 import type { QuestionRegistry } from './question.js'
 import { startAcpProcess } from './acp-process.js'
-import { expandRemoteHome, remoteTargetOf, remoteTransport, sanitizeSessionName } from './remote.js'
+import { expandRemoteHome, hostDriverFor, sanitizeSessionName, type HostDriver } from './remote.js'
 import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import type { Config } from './index.js'
 
@@ -154,27 +154,22 @@ interface KimiVersionInfo {
   error?: string
 }
 
-/** 跑版本探针并解析（本地与远程共用）。 */
-function runKimiVersionProbe(command: string, args: string[]): Promise<KimiVersionInfo> {
-  return new Promise((resolvePromise) => {
-    execFile(command, args, { timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error !== null) {
-        resolvePromise({ ok: false, error: `${stdout.trim()} ${stderr.trim()}`.trim() || error.message })
-        return
-      }
-      if (stdout.includes('NO_KIMI')) {
-        resolvePromise({ ok: false, error: '找不到 kimi' })
-        return
-      }
-      const current = /^CUR=(.+)$/m.exec(stdout)?.[1]?.trim()
-      const latest = /^LAT=(.+)$/m.exec(stdout)?.[1]?.trim()
-      resolvePromise({
-        ok: true,
-        ...current === undefined || current === '' ? {} : { current },
-        ...latest === undefined || latest === '' ? {} : { latest },
-      })
-    })
-  })
+/** 跑版本探针并解析（本地/远程同一驱动面）。 */
+async function runKimiVersionProbe(driver: HostDriver, probe: string): Promise<KimiVersionInfo> {
+  const { stdout, stderr, error } = await driver.execProbe(probe, 30_000)
+  if (error !== null) {
+    return { ok: false, error: `${stdout.trim()} ${stderr.trim()}`.trim() || error.message }
+  }
+  if (stdout.includes('NO_KIMI')) {
+    return { ok: false, error: '找不到 kimi' }
+  }
+  const current = /^CUR=(.+)$/m.exec(stdout)?.[1]?.trim()
+  const latest = /^LAT=(.+)$/m.exec(stdout)?.[1]?.trim()
+  return {
+    ok: true,
+    ...current === undefined || current === '' ? {} : { current },
+    ...latest === undefined || latest === '' ? {} : { latest },
+  }
 }
 
 /** 版本探针缓存（60 秒；本地键为 ''）。 */
@@ -191,48 +186,31 @@ async function kimiVersionOf(host: SshHostEntry | undefined, config: Config): Pr
   const key = host?.alias ?? ''
   const cached = versionCache.get(key)
   if (cached !== undefined && Date.now() - cached.at < 60_000) return cached.info
-  const probe = versionProbeFor(config)
-  const info = host === undefined
-    ? await runKimiVersionProbe('sh', ['-c', probe])
-    : await runKimiVersionProbe(config.sshCommand, (() => { const t = remoteTargetOf(host); return [...t.sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', t.dest, probe] })())
+  const info = await runKimiVersionProbe(hostDriverFor(host, config.sshCommand), versionProbeFor(config))
   versionCache.set(key, { at: Date.now(), info })
   return info
 }
 
-/** 跑一段 sh 更新流程并汇总结果（本地与远程共用）。 */
-function runKimiUpdate(command: string, args: string[]): Promise<UpdateKimiResult> {
-  return new Promise((resolvePromise) => {
-    execFile(command, args, { timeout: 300_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const output = `${stdout.trim()}\n${stderr.trim()}`.trim()
-      const version = /([0-9]+\.[0-9]+\.[0-9]+)/.exec(output.split('\n').at(-1) ?? '')?.[1]
-      if (error !== null) {
-        resolvePromise({ ok: false, output: output !== '' ? output : error.message, ...version === undefined ? {} : { version } })
-        return
-      }
-      if (output.includes('NO_KIMI')) {
-        resolvePromise({ ok: false, output: '找不到 kimi（PATH、~/.kimi-code/bin、登录 shell 都没有）' })
-        return
-      }
-      resolvePromise({ ok: true, output, ...version === undefined ? {} : { version } })
-    })
-  })
+/** 跑一段 sh 更新流程并汇总结果（本地/远程同一驱动面）。 */
+async function runKimiUpdate(driver: HostDriver, flow: string): Promise<UpdateKimiResult> {
+  const { stdout, stderr, error } = await driver.execProbe(flow, 300_000)
+  const output = `${stdout.trim()}\n${stderr.trim()}`.trim()
+  const version = /([0-9]+\.[0-9]+\.[0-9]+)/.exec(output.split('\n').at(-1) ?? '')?.[1]
+  if (error !== null) {
+    return { ok: false, output: output !== '' ? output : error.message, ...version === undefined ? {} : { version } }
+  }
+  if (output.includes('NO_KIMI')) {
+    return { ok: false, output: '找不到 kimi（PATH、~/.kimi-code/bin、登录 shell 都没有）' }
+  }
+  return { ok: true, output, ...version === undefined ? {} : { version } }
 }
 
-/** 更新本机 kimi（config.command 是裸名 'kimi' 时走三级解析；自定义命令直接用它）。 */
-function updateLocalKimi(config: Config): Promise<UpdateKimiResult> {
+/** 更新 kimi（本地/远程同一段流程，差异在驱动层；config.command 是裸名 'kimi' 时走三级解析，自定义命令直接用它）。 */
+function updateKimiOn(host: SshHostEntry | undefined, config: Config): Promise<UpdateKimiResult> {
   const flow = config.command === 'kimi'
     ? KIMI_UPDATE_FLOW
     : `OUT=$(${config.command} update 2>&1 || true); echo "$OUT"; ${config.command} --version`
-  return runKimiUpdate('sh', ['-c', flow])
-}
-
-/** 更新一台远程主机的 kimi（经 ssh 跑同一段流程）。 */
-function updateRemoteKimi(host: SshHostEntry, config: Config): Promise<UpdateKimiResult> {
-  const { dest, sshArgs } = remoteTargetOf(host)
-  const flow = config.command === 'kimi'
-    ? KIMI_UPDATE_FLOW
-    : `OUT=$(${config.command} update 2>&1 || true); echo "$OUT"; ${config.command} --version`
-  return runKimiUpdate(config.sshCommand, [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', dest, flow])
+  return runKimiUpdate(hostDriverFor(host, config.sshCommand), flow)
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -278,6 +256,17 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
   })
 
   // 会话状态条数据：kimi 侧模型/模式/思考/上下文占用（仅 frostfin 驱动的存活会话）。
+  /** 远程 git 分支缓存（host:cwd → 30 秒）。 */
+  const remoteBranchCache = new Map<string, { at: number; branch: string | undefined }>()
+  const remoteBranchOf = async (alias: string, cwd: string): Promise<string | undefined> => {
+    const key = `${alias}:${cwd}`
+    const cached = remoteBranchCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < 30_000) return cached.branch
+    const host = loadSshHosts(config.sshConfigFile).find(candidate => candidate.alias === alias)
+    const branch = host === undefined ? undefined : await hostDriverFor(host, config.sshCommand).probeGitBranch(cwd)
+    remoteBranchCache.set(key, { at: Date.now(), branch })
+    return branch
+  }
   const disposeStatus = webServer.register({
     kind: 'exact',
     path: '/plugins/frostfin/status',
@@ -290,8 +279,13 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
         return
       }
       const status = agent.getKimiStatus()
-      // 远程会话的 cwd 是远程路径——不查本地 git（本地恰好有同路径时会显示本地仓库的分支，误导）。
-      const branch = status.cwd !== undefined && status.host === undefined ? await gitBranchOf(status.cwd) : undefined
+      // 分支：本地会话查本地 git；远程会话经 ssh 查远程 git（30 秒缓存——状态条 3 秒轮询不锤 ssh）。
+      let branch: string | undefined
+      if (status.cwd !== undefined) {
+        branch = status.host === undefined
+          ? await gitBranchOf(status.cwd)
+          : await remoteBranchOf(status.host, status.cwd)
+      }
       send(res, 200, { driven: true, ...status, ...branch === undefined ? {} : { branch } })
     },
   })
@@ -421,7 +415,8 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
   const listRemote = async (host: SshHostEntry): Promise<{ sessions: RemoteSessionItem[]; error?: string; homeDir?: string }> => {
     const cached = remoteListCache.get(host.alias)
     if (cached !== undefined && Date.now() - cached.at < 15_000) return cached.payload
-    const health = await remoteTransport.check(host, config.sshCommand)
+    const driver = hostDriverFor(host, config.sshCommand)
+    const health = await driver.check()
     if (!health.ok) {
       // 失败不缓存——用户在服务器装好 tmux/kimi 后，下一次点击即应重试。
       return { sessions: [], error: health.detail }
@@ -432,10 +427,10 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     try {
       // 只在 command 是默认裸名 'kimi' 时用解析出的绝对路径（显式自定义优先）。
       const kimiCommand = health.kimiPath !== undefined && config.command === 'kimi' ? health.kimiPath : config.command
-      const argv = remoteTransport.buildArgv(host, probeSession, `${kimiCommand} ${config.args.join(' ')}`, config.sshCommand)
+      const spawnSpec = driver.agentSpawnSpec(probeSession, kimiCommand, config.args)
       const proc = await startAcpProcess({
-        command: argv[0]!,
-        args: argv.slice(1),
+        command: spawnSpec.command,
+        args: spawnSpec.args,
         // 本地 spawn 的 cwd 必须本地存在；newSession 的 cwd 必须是远程存在的
         // 路径（远程 home 必然存在）——两者解耦，混用会 ENOENT/internal error。
         cwd: process.cwd(),
@@ -450,7 +445,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
         const sessions = await proc.listSessions()
         // 双写防护提示：同工作区有活 kimi（tmux 前台）的会话打 held 标记，
         // 面板接入前弹确认——两个进程共写一份会话记录会交错分叉。
-        const liveCwds = await remoteTransport.probeLiveCwds(host, config.sshCommand)
+        const liveCwds = await driver.probeLiveCwds()
         const payload = {
           sessions: sessions
             // 探针自己的握手会话（无标题、即弃即删）不进列表——不然每次连接都闪现一条垃圾。
@@ -486,7 +481,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     } finally {
       // 探针 pane 收尾覆盖一切 outcome（含握手失败——kimi 未登录时 startAcpProcess
       // 抛错但 pane 已经建好）。killSession 永不 reject。
-      await remoteTransport.killSession(host, probeSession, config.sshCommand)
+      await driver.killSession(probeSession)
     }
   }
 
@@ -636,30 +631,23 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           return
         }
 
-        // 组装探针 spawn：远程走 ssh+tmux shim（体检解析 kimi 绝对路径），本地直起。
-        let command = config.command
-        let args = config.args
-        let sessionCwd = homedir()
-        let probeSession: string | undefined
-        if (host !== undefined) {
-          const health = await remoteTransport.check(host, config.sshCommand)
-          if (!health.ok) {
-            send(res, 502, { error: health.detail })
-            return
-          }
-          const kimiCommand = health.kimiPath !== undefined && config.command === 'kimi' ? health.kimiPath : config.command
-          probeSession = sanitizeSessionName(`frostfin-v2-probe-${randomUUID().slice(0, 8)}-${host.alias}`)
-          const argv = remoteTransport.buildArgv(host, probeSession, `${kimiCommand} ${config.args.join(' ')}`, config.sshCommand)
-          command = argv[0]!
-          args = argv.slice(1)
-          sessionCwd = health.homeDir ?? '/tmp'
+        // 组装探针 spawn：远程走 ssh+tmux shim（体检解析 kimi 绝对路径），本地直起——驱动层收口。
+        const driver = hostDriverFor(host, config.sshCommand)
+        const health = await driver.check()
+        if (!health.ok) {
+          send(res, 502, { error: health.detail })
+          return
         }
+        const kimiCommand = health.kimiPath !== undefined && config.command === 'kimi' ? health.kimiPath : config.command
+        const probeSession = sanitizeSessionName(`frostfin-v2-probe-${randomUUID().slice(0, 8)}-${host?.alias ?? 'local'}`)
+        const spawnSpec = driver.agentSpawnSpec(probeSession, kimiCommand, config.args)
         try {
           const proc = await startAcpProcess({
-            command,
-            args,
+            command: spawnSpec.command,
+            args: spawnSpec.args,
             cwd: process.cwd(),
-            sessionCwd,
+            // 远程握手 cwd 用远程 home（必然存在）；本地用本机 home。
+            sessionCwd: health.homeDir ?? (host === undefined ? homedir() : '/tmp'),
             permission: 'allow',
             disposeEofGraceMs: config.disposeEofGraceMs,
             disposeGraceMs: config.disposeGraceMs,
@@ -682,9 +670,8 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           }
         } finally {
           // 探针 pane 收尾覆盖一切 outcome（含握手失败——pane 已建但 startAcpProcess 抛错）。
-          if (host !== undefined && probeSession !== undefined) {
-            await remoteTransport.killSession(host, probeSession, config.sshCommand)
-          }
+          // 本地探针无 pane，killSession 是静默 no-op。
+          await driver.killSession(probeSession)
         }
       } catch (error: unknown) {
         send(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -702,7 +689,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
         const body = await readBody(req) as { host?: unknown }
         const alias = typeof body.host === 'string' && body.host !== '' ? body.host : undefined
         if (alias === undefined) {
-          const result = await updateLocalKimi(config)
+          const result = await updateKimiOn(undefined, config)
           // 更新成功后失效版本缓存——客户端紧接着的刷新要看到新版本。
           if (result.ok) versionCache.delete('')
           send(res, result.ok ? 200 : 500, result)
@@ -713,7 +700,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           send(res, 404, { error: `ssh 配置里找不到主机 "${alias}"` })
           return
         }
-        const result = await updateRemoteKimi(host, config)
+        const result = await updateKimiOn(host, config)
         if (result.ok) versionCache.delete(alias)
         send(res, result.ok ? 200 : 500, result)
       } catch (error: unknown) {

@@ -64,7 +64,7 @@ src/                  宿主半身（Node 侧，tsc 编译到 lib/）
   shadow-native.ts    影子挂载原生 agent-loop（cordis isolate + Proxy 捕获其工厂，供 preset 分发委托）
   host-scope.ts       从宿主进程模块树解析 dsh-* 包（模块私有 Symbol 必须与宿主同一份）
   panel.ts            webServer HTTP 端点：/plugins/frostfin/*（会话列表/打开/状态条/提问/远程主机）
-  remote.ts           远程线：ssh+tmux shim 命令构建、远程体检、活 TUI 探针（双写防护提示）+ RemoteTransport 传输接口（remoteTransport 分派点，POSIX 唯一实现）
+  remote.ts           远程线：ssh+tmux shim 命令构建、远程体检、活 TUI 探针（双写防护提示）+ HostDriver 宿主驱动接口（hostDriverFor 分派点：本地/远程一视同仁，posix-local 与 posix-ssh-tmux 双实现，Windows 将来在此分派）
   ssh-config.ts       ~/.ssh/config 解析（OpenSSH/VS Code 语义：Host 块、Include、first-obtained-wins）
 src/client/           浏览器半身（React TSX，esbuild 打包；tsc 排除此目录）
   index.ts            槽位注册：会话面板 tab、状态条 dock、提问模态框

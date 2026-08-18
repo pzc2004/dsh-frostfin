@@ -9,8 +9,9 @@
  * - shim 作为单个 argv 元素经 ssh 逐字传递（无 shell 拼接，内容不受引号限制）。
  *
  * 纪律：本模块只处理"怎么连"，不内置任何真实主机信息。
- * 调用方一律经末尾的 `remoteTransport` 分派点（RemoteTransport 接口）——
- * POSIX（ssh+tmux）是当前唯一实现，Windows 等非 POSIX 传输将来在此分派。
+ * 调用方一律经末尾的 `hostDriverFor` 分派点（HostDriver 接口）——本地/远程
+ * 一视同仁；POSIX 是当前唯一实现族（posix-local / posix-ssh-tmux），
+ * Windows 等非 POSIX 平台将来在此分派。
  *
  * @module dsh-frostfin/remote
  */
@@ -239,36 +240,105 @@ export function expandRemoteHome(cwd: string, homeDir: string | undefined): stri
   return cwd
 }
 
+/** POSIX 单引号包裹（内容里的单引号按 '\'' 闭合重开）。 */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** 查远程某目录的 git 分支（状态条用；非仓库/失败/detached 回落 undefined）。 */
+export function probeGitBranch(host: SshHostEntry, cwd: string, sshBin = 'ssh'): Promise<string | undefined> {
+  const { dest, sshArgs } = remoteTargetOf(host)
+  const argv = [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', dest, `git -C ${shQuote(cwd)} rev-parse --abbrev-ref HEAD 2>/dev/null`]
+  return new Promise((resolve) => {
+    execFile(sshBin, argv, { timeout: 10_000 }, (error, stdout) => {
+      const branch = stdout.trim()
+      resolve(error !== null || branch === '' || branch === 'HEAD' ? undefined : branch)
+    })
+  })
+}
+
 /**
- * 远程传输接口：把"连一台远程主机"抽象成一组操作——体检、构建 spawn argv、
- * 探活（双写防护）、杀 tmux 会话（探针收尾）。
- * 立约给未来的非 POSIX 传输（Windows 主机没有 tmux/sh/fifo 这套构件）；
- * 纪律是先立约——没有测试的第二实现不写。
+ * 宿主驱动接口：本地与远程一视同仁的主机操作面——体检、组装 ACP 进程 spawn、
+ * 跑探针脚本、探活（双写防护）、杀 tmux 会话、查 git 分支。
+ * 核心代码（panel/factory）只经此接口，不再有本地/远程分叉；平台差异
+ * （POSIX vs 将来的 Windows）与位置差异都收口在这一层。
+ * 纪律：先立约——没有测试的第二实现不写。
  */
-export interface RemoteTransport {
-  /** 传输名（日志与错误信息用）。 */
+export interface HostDriver {
+  /** 驱动名（日志与错误信息用：'posix-local' / 'posix-ssh-tmux'）。 */
   readonly name: string
-  /** 体检一台主机（认证 → 构件在场 → kimi 路径解析）。 */
-  check(host: SshHostEntry, sshBin?: string): Promise<RemoteHealth>
-  /** 构建承载远程会话的本地 spawn argv。 */
-  buildArgv(host: SshHostEntry, sessionName: string, kimiCmd: string, sshBin?: string): string[]
+  /** 连接前体检（本地恒 ok——kimi 是否在场在 spawn 时自然暴露；远程验认证/tmux/pgrep/kimi）。 */
+  check(): Promise<RemoteHealth>
+  /** 组装承载一个 kimi acp 进程的 spawn 规格（本地直起；远程经 ssh+tmux shim）。 */
+  agentSpawnSpec(sessionName: string, kimiCommand: string, kimiArgs: readonly string[]): { command: string; args: string[] }
+  /** 跑一段 sh 探针脚本。永不 reject——调用方检查 error/stdout（对齐 execFile 回调语义）。 */
+  execProbe(script: string, timeoutMs?: number): Promise<{ stdout: string; stderr: string; error: Error | null }>
   /** 探活：疑似被活 TUI 持有的工作区列表（双写防护提示；失败回落空）。 */
-  probeLiveCwds(host: SshHostEntry, sshBin?: string): Promise<string[]>
+  probeLiveCwds(): Promise<string[]>
   /** 杀掉一个 frostfin tmux 会话（探针收尾；不存在/失败都静默）。 */
-  killSession(host: SshHostEntry, sessionName: string, sshBin?: string): Promise<void>
+  killSession(sessionName: string): Promise<void>
+  /** 查某目录的 git 分支（状态条用；非仓库/失败回落 undefined）。 */
+  probeGitBranch(cwd: string): Promise<string | undefined>
 }
 
-/** POSIX 传输（当前唯一实现）：ssh 承载、tmux 养 pane、fifo 中继、sh 做 shim。 */
-export const posixSshTmux: RemoteTransport = {
-  name: 'posix-ssh-tmux',
-  check: (host, sshBin) => checkRemoteHost(host, sshBin),
-  buildArgv: (host, sessionName, kimiCmd, sshBin) => buildRemoteArgv(host, sessionName, kimiCmd, sshBin),
-  probeLiveCwds: (host, sshBin) => probeLiveKimiCwds(host, sshBin),
-  killSession: (host, sessionName, sshBin) => killRemoteTmuxSession(host, sessionName, sshBin),
+/** execFile 的 Promise 封装（永不 reject，对齐回调语义）。 */
+function runCollect(command: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string; error: Error | null }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({ stdout, stderr, error })
+    })
+  })
+}
+
+/** 本地 POSIX 宿主（macOS/Linux）：直起进程、本地 sh 跑探针、本地 tmux/git。 */
+const posixLocal: HostDriver = {
+  name: 'posix-local',
+  // 本地不体检：kimi 是否在场、是否登录，在首个 prompt 的 spawn/握手时自然暴露并翻译成人话。
+  check: () => Promise.resolve({ ok: true, detail: 'ok' }),
+  agentSpawnSpec: (_sessionName, kimiCommand, kimiArgs) => ({ command: kimiCommand, args: [...kimiArgs] }),
+  execProbe: (script, timeoutMs = 15_000) => runCollect('sh', ['-c', script], timeoutMs),
+  probeLiveCwds: async () => {
+    const { stdout, error } = await runCollect('tmux', ['list-panes', '-a', '-F', LIVE_PANES_FORMAT], 5_000)
+    return error !== null ? [] : parseLiveKimiCwds(stdout)
+  },
+  killSession: async (sessionName) => {
+    await runCollect('tmux', ['kill-session', '-t', sessionName], 5_000)
+  },
+  probeGitBranch: async (cwd) => {
+    const { stdout, error } = await runCollect('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], 5_000)
+    const branch = stdout.trim()
+    return error !== null || branch === '' || branch === 'HEAD' ? undefined : branch
+  },
+}
+
+/** 远程 POSIX 宿主（ssh+tmux）：所有操作经 ssh 承载（shim/fifo/探针脚本）。 */
+function posixSshTmuxDriver(host: SshHostEntry, sshBin: string): HostDriver {
+  return {
+    name: 'posix-ssh-tmux',
+    check: () => checkRemoteHost(host, sshBin),
+    agentSpawnSpec: (sessionName, kimiCommand, kimiArgs) => {
+      const argv = buildRemoteArgv(host, sessionName, `${kimiCommand} ${kimiArgs.join(' ')}`, sshBin)
+      return { command: argv[0]!, args: argv.slice(1) }
+    },
+    execProbe: (script, timeoutMs = 15_000) => {
+      const { dest, sshArgs } = remoteTargetOf(host)
+      return runCollect(sshBin, [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', dest, script], timeoutMs)
+    },
+    probeLiveCwds: () => probeLiveKimiCwds(host, sshBin),
+    killSession: (sessionName) => killRemoteTmuxSession(host, sessionName, sshBin),
+    probeGitBranch: (cwd) => probeGitBranch(host, cwd, sshBin),
+  }
 }
 
 /**
- * 平台分派点：插件内所有远程调用只经此对象，不直接碰具体实现。
- * 将来按主机平台挑传输（如 Windows）时只改这一个常量。
+ * 位置 × 平台分派点：插件内所有主机操作只经此函数拿驱动。
+ * - host 在场 = 远程：POSIX（ssh+tmux）。远程平台的实际闸是体检——没有 tmux/sh
+ *   就人话报缺件；将来的远程 Windows 驱动在体检探出平台后在此分派。
+ * - host 缺省 = 本地：按 process.platform 分。Windows 本地宿主暂未实现——
+ *   明确报错而不是跑出莫名其妙的 POSIX 错误（无测试不实现）。
  */
-export const remoteTransport: RemoteTransport = posixSshTmux
+export function hostDriverFor(host: SshHostEntry | undefined, sshBin = 'ssh'): HostDriver {
+  if (host !== undefined) return posixSshTmuxDriver(host, sshBin)
+  if (process.platform === 'win32') throw new Error('frostfin: Windows 本地宿主暂未支持（HostDriver 目前只有 POSIX 实现）')
+  return posixLocal
+}
