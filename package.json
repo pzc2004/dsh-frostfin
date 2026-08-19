@@ -1,6 +1,6 @@
 {
   "name": "dsh-frostfin",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Kimi Code as the agent loop of DeepSeek Harness — ACP bridge loop plugin",
   "keywords": [
     "deepseek-harness",
@@ -33,6 +33,7 @@
     "lib",
     "cordis.patch.yml",
     "presets",
+    "assets/logo.png",
     "README.md",
     "README-en.md",
     "docs"

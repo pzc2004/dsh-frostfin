@@ -131,20 +131,24 @@ Pinned version: `@deepseek-ai/dsh@0.1.0-rc.x` (see "Status" below).
 ### 3. Install this plugin
 
 ```sh
-# Clone and build
-git clone https://github.com/pzc2004/dsh-frostfin.git
-cd dsh-frostfin && pnpm install && pnpm build
-
-# Add it to DSH's web profile
-npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin
+# One-line install (prebuilt npm package — no build, no allowBuilds prompt)
+npx @deepseek-ai/dsh plugin --profile web add dsh-frostfin
 
 # Restart dsh web to take effect
 npx @deepseek-ai/dsh web
 ```
 
+From source (to review or hack on the code):
+
+```sh
+git clone https://github.com/pzc2004/dsh-frostfin.git
+cd dsh-frostfin && pnpm install && pnpm build
+npx @deepseek-ai/dsh plugin --profile web add .
+```
+
 Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "月芒霜鳍鲸" tab (local and remote kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route. **The full feature guide (panel / remote / commands / permission modes / FAQ) lives at [docs/guide.md](docs/guide.md) (Chinese).**
 
-**Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add /path/to/dsh-frostfin`
+**Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
 
 **Uninstall**: `npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin` — uninstalling reverts every registration and removes the managed block synced into kimi's `config.toml` (your kimi config is restored verbatim). Session bindings and the model cache under `~/.frostfin/` are kept so a reinstall can resume; to wipe them completely, `rm -rf ~/.frostfin`.
 

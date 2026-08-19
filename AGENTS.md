@@ -125,11 +125,11 @@ assets/               图片素材（含《原神》版权素材，不在 MIT �
 ## 部署（装进 DSH）
 
 ```sh
-git clone https://github.com/pzc2004/dsh-frostfin.git
-cd dsh-frostfin && pnpm install && pnpm build
-npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin   # headless profile 同理
+npx @deepseek-ai/dsh plugin --profile web add dsh-frostfin   # npm 预构建包；headless profile 同理
 npx @deepseek-ai/dsh web    # 重启生效
 ```
+
+从源码安装：`git clone` 后 `pnpm install && pnpm build`，然后 `dsh plugin --profile web add .`。
 
 安装时 `cordis.patch.yml` 生效：插入 frostfin 插件行、把「月芒霜鳍鲸」设为默认模式、禁用原生 agent-loop。package.json 的 `dsh.client.inject` 声明浏览器半身注入点。卸载（`dsh plugin --profile web remove dsh-frostfin`）自动撤销一切注册并摘除 kimi 配置托管块。前置条件：本机已装 Kimi Code 并 `/login`（登录态由 `kimi acp` 子进程直接复用）。
 

@@ -133,20 +133,24 @@ npx @deepseek-ai/dsh web   # Web UI 默认在 http://127.0.0.1:3080
 ### 3. 安装本插件
 
 ```sh
-# 克隆并构建
-git clone https://github.com/pzc2004/dsh-frostfin.git
-cd dsh-frostfin && pnpm install && pnpm build
-
-# 装进 DSH 的 web profile
-npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-frostfin
+# 一行安装（npm 预构建包，免构建免授权）
+npx @deepseek-ai/dsh plugin --profile web add dsh-frostfin
 
 # 重启 dsh web 生效
 npx @deepseek-ai/dsh web
 ```
 
+想从源码安装（审阅/二开）：
+
+```sh
+git clone https://github.com/pzc2004/dsh-frostfin.git
+cd dsh-frostfin && pnpm install && pnpm build
+npx @deepseek-ai/dsh plugin --profile web add .
+```
+
 装好后：新模式「月芒霜鳍鲸」自动成为默认模式；会话视图环多出「月芒霜鳍鲸」tab（kimi 会话列表，一键接入）；无需任何模型配置——DSH 的模型门禁由名义路由喂饱。**完整功能手册（面板/远程/命令/权限模式/FAQ）见 [docs/guide.md](docs/guide.md)。**
 
-**headless 也想要**：`npx @deepseek-ai/dsh plugin --profile headless add /path/to/dsh-frostfin`
+**headless 也想要**：`npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
 
 **卸载**：`npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin`——卸载会自动撤销一切注册，并把同步进 kimi `config.toml` 的托管块摘除（你的 kimi 配置原样恢复）。`~/.frostfin/` 下的会话绑定与模型缓存会保留以便重装续聊；想彻底清除再 `rm -rf ~/.frostfin`。
 
