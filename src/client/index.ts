@@ -7,6 +7,7 @@ import { createElement } from 'react'
 import { SessionsPanel } from './SessionsPanel.js'
 import { StatusDock } from './StatusDock.js'
 import { QuestionModal } from './QuestionModal.js'
+import { KimiConfigPill } from './KimiConfigPill.js'
 
 /** 需要的客户端服务：槽位系统 + 会话导航。 */
 export const inject = ['slots', 'sessions']
@@ -45,4 +46,22 @@ export function apply(ctx: Context): void {
     }, (props: { sessionId: string }) => createElement(QuestionModal, props))
   })
   console.log('[frostfin] 问题模态框 dock 已提交 inject')
+
+  // 输入区工具行按钮：thinking 档位（右侧槽位，紧邻模型选择器）与
+  // kimi 权限模式（左侧槽位，DSH 访问控制旁）。档位行来自 kimi 上报。
+  ctx.slots.inject('conversation.input.right', () => {
+    return ctx.slots.register({
+      name: 'conversation.input.right',
+      id: 'frostfin-thinking-pill',
+      inject: (sessionId: string) => ({ sessionId }),
+    }, (props: { sessionId: string }) => createElement(KimiConfigPill, { ...props, configId: 'thinking', label: 'thinking' }))
+  })
+  ctx.slots.inject('conversation.input.left', () => {
+    return ctx.slots.register({
+      name: 'conversation.input.left',
+      id: 'frostfin-mode-pill',
+      inject: (sessionId: string) => ({ sessionId }),
+    }, (props: { sessionId: string }) => createElement(KimiConfigPill, { ...props, configId: 'mode', label: '模式' }))
+  })
+  console.log('[frostfin] 输入区配置按钮已提交 inject')
 }

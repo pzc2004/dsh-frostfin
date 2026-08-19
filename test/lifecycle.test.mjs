@@ -233,3 +233,30 @@ test('档位重放：切到 yolo 后进程崩溃重连，kimi 侧模式不丢', 
   assert.equal(agent.getKimiStatus().mode, 'yolo')
   assert.equal(agent.getKimiStatus().thinking, 'low')
 })
+
+test('set-config 端点：切换 thinking/模式，可选档位行随状态返回；非法 configId 拒绝', async (t) => {
+  const { ctx, webServer } = await bootPlugin({ withWebServer: true })
+  const handle = await ctx.agents.create({
+    sessionId: `test-${crypto.randomUUID()}`,
+    meta: { cwd: process.cwd() },
+  })
+  const { agent } = handle
+  t.after(async () => {
+    await handle.dispose().catch(() => {})
+    await ctx.fiber.dispose().catch(() => {})
+  })
+
+  const call = async (body) => {
+    const res = mockResponse()
+    await webServer.routes.get('/plugins/frostfin/set-config').handler(mockPost(body), res)
+    return res
+  }
+  assert.equal((await call({ sessionId: agent.id, configId: 'model', value: 'x' })).status, 400)
+  assert.equal((await call({ sessionId: agent.id, configId: 'thinking', value: 'low' })).status, 200)
+  assert.equal(agent.getKimiStatus().thinking, 'low')
+  assert.equal((await call({ sessionId: agent.id, configId: 'mode', value: 'yolo' })).status, 200)
+  assert.equal(agent.getKimiStatus().mode, 'yolo')
+  // 可选档位行（夹具 configOptions 的全集）随状态返回。
+  assert.deepEqual(agent.getKimiStatus().thinkingOptions, ['off', 'low', 'medium', 'high'])
+  assert.deepEqual(agent.getKimiStatus().modeOptions, ['default', 'plan', 'auto', 'yolo'])
+})

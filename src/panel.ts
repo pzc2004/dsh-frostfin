@@ -319,6 +319,37 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
+  /**
+   * 切换 kimi 的 thinking 档位 / 权限模式（输入区工具行按钮的数据面）。
+   * 只放行这两个 configId；值合法性由 kimi 侧校验（不在其可选行里会报错）。
+   */
+  const disposeSetConfig = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/set-config',
+    handler: async (req, res) => {
+      try {
+        const body = await readBody(req) as { sessionId?: unknown; configId?: unknown; value?: unknown }
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+        const configId = typeof body.configId === 'string' ? body.configId : ''
+        const value = typeof body.value === 'string' ? body.value : ''
+        const agent = ctx.agents.get(sessionId as SessionId)
+        if (!(agent instanceof FrostfinAgent)) {
+          send(res, 404, { ok: false, error: '会话不存在或不是 frostfin 驱动' })
+          return
+        }
+        if (configId !== 'thinking' && configId !== 'mode') {
+          send(res, 400, { ok: false, error: '只支持 thinking / mode' })
+          return
+        }
+        if (configId === 'thinking') await agent.setKimiThinking(value)
+        else await agent.setKimiMode(value)
+        send(res, 200, { ok: true })
+      } catch (error: unknown) {
+        send(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  })
+
   const disposeOpen = webServer.register({
     kind: 'exact',
     path: '/plugins/frostfin/open',
@@ -725,12 +756,13 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
-  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / reconnect / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
+  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / reconnect / set-config / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
   return () => {
     disposeList()
     disposeLogo()
     disposeStatus()
     disposeReconnect()
+    disposeSetConfig()
     disposeOpen()
     disposePending()
     disposeAnswer()

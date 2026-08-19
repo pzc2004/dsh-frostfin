@@ -72,6 +72,10 @@ export interface KimiStatus {
   hostUser?: string
   /** 是否已绑定 kimi 会话（状态条据此决定未连接时能否自动重连：无绑定保持惰性启动）。 */
   bound: boolean
+  /** kimi 当前模型的 thinking 可选档位（输入区按钮的数据源；模型不支持时缺省）。 */
+  thinkingOptions?: string[]
+  /** kimi 的权限模式可选项（同上）。 */
+  modeOptions?: string[]
 }
 
 /** 读取取消信号携带的原因（cancel(cause) 中止时一定带原因）。 */
@@ -378,6 +382,15 @@ export class FrostfinAgent implements Agent {
       return typeof option.currentValue === 'string' ? option.currentValue : undefined
     }
     const model = pick('model')
+    // 可选档位行（输入区按钮的下拉数据源）。
+    const rowsOf = (id: string): string[] | undefined => {
+      const option = options?.find(candidate => candidate.id === id)
+      if (option === undefined || !('options' in option)) return undefined
+      const rows = flattenSelectOptions(option.options).map(row => row.value)
+      return rows.length === 0 ? undefined : rows
+    }
+    const thinkingOptions = rowsOf('thinking')
+    const modeOptions = rowsOf('mode')
     // 显示名映射：用模型选项的 name（"Kimi K3"），而不是裸 id。
     let modelName: string | undefined
     const modelOption = options?.find(candidate => candidate.id === 'model')
@@ -394,6 +407,8 @@ export class FrostfinAgent implements Agent {
       alive: this.acp !== undefined && !this.processDead,
       cwd: this.session.header.cwd,
       bound: this.kimiSessionId !== undefined,
+      ...thinkingOptions === undefined ? {} : { thinkingOptions },
+      ...modeOptions === undefined ? {} : { modeOptions },
       ...this.deps.remoteHost === undefined ? {} : {
         host: this.deps.remoteHost.alias,
         ...this.deps.remoteHost.user === undefined ? {} : { hostUser: this.deps.remoteHost.user },
