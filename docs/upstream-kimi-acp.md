@@ -35,6 +35,12 @@
 - **现状**：kimi 会话落盘（`agent-core/src/session/store/session-store.ts`）没有任何锁或独占打开；`session/load` 也不介意目标会话正被另一个进程持有。两个进程加载同一会话时，内存态各自独立、JSONL 交错追加、state 文件互相覆盖——不崩但历史分叉。真实场景：TUI 里开着的会话被 ACP 客户端（如本插件）再接入，或两个 ACP 客户端抢同一会话。
 - **建议**：会话级锁文件（load 时占用、冲突报错），或 `session/list` / `session/load` 响应携带 `live`/`locked` 标志，让客户端至少能提示"该会话正被占用"。
 
+## 7. steer（运行中注入）在 ACP 面上不存在
+
+- **现状**：kimi 引擎原生支持 steer——`klient` 的 agent facade 有 `steer(input)`（`packages/klient/src/core/facade/agent.ts:45`），TUI 的 Ctrl+S 就走它：输入注入正在运行的 turn，下一个 step 边界（当前 tool call / thinking 段结束）即生效。但 ACP 面上没有任何 steer 通道（acp-server/acp-adapter 全文无 steer）；运行中再发 `session/prompt` 会被 `assertNoActiveTurn()` 直接拒绝（`acp-server/src/session.ts` 的 `driveTurn`）。
+- **影响**：ACP 客户端做不了"运行中插话"——只能排队等当前轮跑完，或 cancel 当前轮再开新轮（留中止痕迹，语义也不等价）。
+- **建议**：新增 `session/steer` 扩展方法（或 `session/prompt` 携带 `mode`），适配器转发给引擎的 `agent.steer()`。引擎是现成的，只差暴露。
+
 ---
 
 另有一份 DSH（DeepSeek Harness）侧的上游清单（审批结果词汇表缺"本会话允许"、空白会话切 preset 不重跑工厂等），与 kimi 无关，不在此列。

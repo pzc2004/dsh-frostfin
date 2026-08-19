@@ -234,6 +234,33 @@ test('档位重放：切到 yolo 后进程崩溃重连，kimi 侧模式不丢', 
   assert.equal(agent.getKimiStatus().thinking, 'low')
 })
 
+test('运行中发消息排队：当前轮跑完后按序回答（followup 与 steer 同纪律）', async (t) => {
+  const { ctx, handle, agent, session } = await bootFrostfin('allow')
+  t.after(async () => {
+    await handle.dispose().catch(() => {})
+    await ctx.fiber.dispose().catch(() => {}
+    )
+  })
+
+  agent.followup(prompt('slow 第一轮'))
+  // 等第一轮跑起来再插两条（一条普通排队、一条走 steer 通道）。
+  await new Promise(r => setTimeout(r, 600))
+  agent.followup(prompt('排队的第二轮'))
+  agent.steer(prompt('steer 的第三轮'))
+  await agent.whenIdle()
+
+  const texts = session.events
+    .filter(e => e.type === 'user/message')
+    .flatMap(e => e.data.content).map(b => b.text ?? '')
+  for (const marker of ['第一轮', '第二轮', '第三轮']) {
+    assert.ok(texts.some(t => t.includes(marker)), `${marker} 应被认领`)
+  }
+  // 全部 turn 正常收尾（排队语义：无中止）。
+  const ends = session.events.filter(e => e.type === 'turn/end')
+  assert.ok(ends.length >= 2)
+  assert.ok(ends.every(e => e.data.reason.kind === 'completed'))
+})
+
 test('set-config 端点：切换 thinking/模式，可选档位行随状态返回；非法 configId 拒绝', async (t) => {
   const { ctx, webServer } = await bootPlugin({ withWebServer: true })
   const handle = await ctx.agents.create({

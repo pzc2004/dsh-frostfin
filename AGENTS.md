@@ -43,7 +43,7 @@ pnpm test           # node --test test/*.test.mjs
 
 **重要**：测试直接 import `../lib/*.js`（构建产物），改完 `src/` 必须先 `pnpm build` 再 `pnpm test`，否则测的是旧代码。
 
-最近一次验证：`pnpm build` 通过，`pnpm test` 82 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
+最近一次验证：`pnpm build` 通过，`pnpm test` 84 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
 
 ## 目录结构与模块划分
 

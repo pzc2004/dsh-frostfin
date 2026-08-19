@@ -126,8 +126,8 @@ export function registerSlashCommands(ctx: Context, logger: Logger, kimiMap: Kim
     })
     const disposeThinking = commands.register({
       name: 'frostfin-thinking',
-      description: '[frostfin] 查看/切换 kimi 的 thinking 档位：/frostfin-thinking <off|low|medium|high>',
-      input: { hint: 'off | low | medium | high（以模型支持为准）' },
+      description: '[frostfin] 查看/切换 kimi 的 thinking 档位（无参显示当前与可选档位）',
+      input: { hint: '留空查看当前与可选档位' },
       handler: async (invocation) => {
         const { agent } = invocation
         if (!(agent instanceof FrostfinAgent)) {

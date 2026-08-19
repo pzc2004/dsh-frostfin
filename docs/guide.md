@@ -68,7 +68,7 @@
 | `/frostfin-attach <sessionId>` | frostfin | 接入一个既有 kimi 会话 |
 | `/frostfin-sessions` | frostfin | 列出本机可接入的 kimi 会话 |
 | `/frostfin-mode <default\|plan\|auto\|yolo>` | frostfin | 查看/切换 kimi 权限模式 |
-| `/frostfin-thinking <off\|low\|medium\|high>` | frostfin | 查看/切换 thinking 档位（以模型支持为准） |
+| `/frostfin-thinking [档位]` | frostfin | 查看/切换 thinking 档位（档位集合以 kimi 当前模型为准，如 off/low/medium/high/max） |
 | `/frostfin-plan` | frostfin | 一键进入 kimi 的 plan 模式（引擎级只读） |
 | `/yolo` `/auto` | kimi | 模式快捷键（= /frostfin-mode yolo/auto） |
 | `/compact` `/status` `/usage` `/mcp` `/tasks` `/help` | kimi | kimi 内建命令，原样透传执行 |
@@ -140,7 +140,7 @@ npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin
 `/plan` 是 DSH plan-mode 在 standard 等 preset 组合里注册的，frostfin 会话刻意不含它（它对 kimi 无效）。kimi 的 plan 用 `/frostfin-plan`。
 
 **怎么调 thinking/effort？**
-`/frostfin-thinking <off|low|medium|high>`，无参可查当前与可选档位。
+`/frostfin-thinking [档位]`：无参可查当前与可选档位，带参直接切换。可选档位集合以 kimi 当前模型上报的为准（off/low/medium/high/max 都可能出现，不支持的模型会明说）。
 
 **后台任务在哪看？**
 敲 `/tasks`（kimi 内建命令透传）列出任务与状态。常驻实时列表要等 kimi ACP 上游暴露任务状态。

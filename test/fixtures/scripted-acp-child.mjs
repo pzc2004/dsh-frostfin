@@ -38,6 +38,8 @@ const REPLAY = [
 function makeAgent(conn) {
   // 会话内的"当前模型/模式/thinking 档位"（configOptions 同步与 setSessionConfigOption 共用）。
   let currentModel = 'kimi-for-coding'
+  // 进行中 prompt 的取消标记（cancel() 置位，slow 剧本轮询）。
+  let promptAborted = false
   let currentMode = 'default'
   let currentThinking = 'high'
   const modelOptions = () => [{
@@ -116,6 +118,17 @@ function makeAgent(conn) {
       const text = params.prompt.map(block => (block.type === 'text' ? block.text : '')).join('')
       if (text.includes('boom')) process.exit(1)
       const say = (update) => conn.sessionUpdate({ sessionId: params.sessionId, update })
+      // 慢剧本：prompt 含 'slow' 时最多拖 5 秒，每 100ms 看一眼取消——模拟 kimi
+      // 长 turn 与 cancel 真实生效（steer/立即回答测试的对端）。
+      if (text.includes('slow')) {
+        for (let i = 0; i < 50; i += 1) {
+          if (promptAborted) {
+            promptAborted = false
+            return { stopReason: 'cancelled' }
+          }
+          await new Promise(r => setTimeout(r, 100))
+        }
+      }
       // 斜杠命令剧本：模拟 kimi 适配器的内建命令执行（回显标记文本）。
       if (text.startsWith('/')) {
         await say({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `[executed] ${text}` } })
@@ -188,6 +201,8 @@ function makeAgent(conn) {
       return { stopReason: 'end_turn' }
     },
     cancel() {
+      // 慢剧本的取消闸（对齐真 kimi：cancel 让进行中的 prompt 以 cancelled 收尾）。
+      promptAborted = true
       return Promise.resolve()
     },
   }
