@@ -217,7 +217,9 @@ test('e2e：死 pane 自愈——kimi 死后重连，shim 原位重启（respawn
 })
 
 test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑定记主机，dispose 不杀 pane', { skip: !hasTmux }, async (t) => {
-  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\nexec sh -c "$last"')
+  // 假 ssh：体检探针回罐头健康应答（探针在本地执行——不能依赖宿主恰好装了 kimi，
+  // CI 上就没有；探针三级解析逻辑本身由 checkRemoteHost 单测覆盖），其余本地执行。
+  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *PROBE_DONE*) echo "KIMI_PATH=/fake/kimi"; echo "PROBE_HOME=$HOME"; echo PROBE_DONE ;; *) exec sh -c "$last" ;; esac')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
   const sshConfigFile = join(sshConfigDir, 'config')
   writeFileSync(sshConfigFile, 'Host spike-local\n  HostName spike.local.example.com\n  User spiker\n')
@@ -253,9 +255,10 @@ test('e2e：整插件远程会话——meta.frostfinHost 走远程 spawn，绑�
 })
 
 test('e2e：面板远程端点——remote-hosts / remote-sessions / open-remote / delete-session 全链', { skip: !hasTmux }, async (t) => {
-  // 假 ssh：活 TUI 探针（含 pane_current_path 的 list-panes；shim 存活闸不含此字段）回剧本行
+  // 假 ssh：体检探针回罐头健康应答（同上一个用例——不依赖宿主装没装 kimi）；
+  // 活 TUI 探针（含 pane_current_path 的 list-panes；shim 存活闸不含此字段）回剧本行
   //（cwd 可被 FROSTFIN_PROBE_CWD 覆盖，测 held 负向）；其余命令本地执行。
-  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *pane_current_path*) printf "work|kimi-code|%s\\n" "${FROSTFIN_PROBE_CWD:-$PWD}" ;; *rev-parse*) echo main ;; *) exec sh -c "$last" ;; esac')
+  const ssh = fakeSsh('#!/bin/sh\nfor last; do :; done\ncase "$last" in *PROBE_DONE*) echo "KIMI_PATH=/fake/kimi"; echo "PROBE_HOME=$HOME"; echo PROBE_DONE ;; *pane_current_path*) printf "work|kimi-code|%s\\n" "${FROSTFIN_PROBE_CWD:-$PWD}" ;; *rev-parse*) echo main ;; *) exec sh -c "$last" ;; esac')
   const sshConfigDir = mkdtempSync(join(tmpdir(), 'frostfin-sshcfg-'))
   const sshConfigFile = join(sshConfigDir, 'config')
   writeFileSync(sshConfigFile, 'Host spike-local\n  HostName spike.local.example.com\nHost spike-elsewhere\n  HostName spike2.example.com\n')
