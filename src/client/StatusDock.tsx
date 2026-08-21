@@ -21,6 +21,8 @@ interface KimiStatusPayload {
   hostUser?: string
   /** 是否已绑定 kimi 会话（决定未连接时能否自动重连）。 */
   bound?: boolean
+  /** Kimi Coding 订阅配额窗口（5h/周/月；没 key 或查询失败缺省）。 */
+  balance?: { id: 'fiveHour' | 'week' | 'month'; percent: number; limit?: number; remaining?: number; resetsAt?: string }[]
   branch?: string
 }
 
@@ -117,6 +119,21 @@ export function StatusDock({ sessionId }: { sessionId: string }) {
       fontFamily: 'inherit',
     }}>
       {parts.map((part, index) => <span key={index}>{part}</span>)}
+      {status.balance?.map(window => {
+        const label = window.id === 'fiveHour' ? '5h' : window.id === 'week' ? '周' : '月'
+        const detail = [
+          window.limit !== undefined && window.remaining !== undefined
+            ? `已用 ${window.limit - window.remaining}/${window.limit}`
+            : '',
+          window.resetsAt !== undefined ? `刷新：${window.resetsAt}` : '',
+        ].filter(Boolean).join('；')
+        const color = window.percent >= 95 ? '#e5534b' : window.percent >= 80 ? '#e8a13c' : undefined
+        return (
+          <span key={window.id} title={detail || 'Kimi Coding 订阅配额'} style={color === undefined ? {} : { color }}>
+            {label}:{window.percent}%
+          </span>
+        )
+      })}
       {status.alive === true && (
         <span title="kimi 进程已连接" style={{ color: '#57ab5a' }}>●</span>
       )}
