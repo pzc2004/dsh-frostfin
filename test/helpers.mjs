@@ -66,7 +66,7 @@ export function localSpawn(spec) {
  * @param options.onSpawn - 每次 spawn 回调（计数用）。
  * @returns ctx、插件 fiber、每次测试独立的 stateFile 路径等。
  */
-export async function bootPlugin({ permission = 'allow', approval, attachments, persistenceSeed, withCommands, withWebServer, advertiseKimiRoute = false, routeFakes, command, onSpawn, sshConfigFile, sshCommand } = {}) {
+export async function bootPlugin({ permission = 'allow', approval, attachments, persistenceSeed, withCommands, withWebServer, advertiseKimiRoute = false, routeFakes, command, onSpawn, sshConfigFile, sshCommand, scpCommand, workspaceRegistry } = {}) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
@@ -87,6 +87,7 @@ export async function bootPlugin({ permission = 'allow', approval, attachments, 
   if (commands !== undefined) ctx.provide('commands', commands)
   const webServer = withWebServer === true ? fakeWebServer() : undefined
   if (webServer !== undefined) ctx.provide('webServer', webServer)
+  if (workspaceRegistry !== undefined) ctx.provide('workspaceRegistry', workspaceRegistry)
   const stateFile = join(mkdtempSync(join(tmpdir(), 'frostfin-test-')), 'kimi-sessions.json')
   const fiber = await ctx.plugin(frostfin, {
     command: command ?? process.execPath,
@@ -103,6 +104,7 @@ export async function bootPlugin({ permission = 'allow', approval, attachments, 
     primeCatalog: false,
     ...sshConfigFile === undefined ? {} : { sshConfigFile },
     ...sshCommand === undefined ? {} : { sshCommand },
+    ...scpCommand === undefined ? {} : { scpCommand },
   })
   return { ctx, fiber, stateFile, commands, webServer }
 }

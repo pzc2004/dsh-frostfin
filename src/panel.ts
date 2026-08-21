@@ -10,9 +10,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context, Logger } from '@deepseek-ai/cordis'
@@ -25,7 +25,7 @@ import { FROSTFIN_PRESET_ID } from './preset-install.js'
 import type { KimiSessionMap } from './kimi-sessions.js'
 import type { QuestionRegistry } from './question.js'
 import { startAcpProcess } from './acp-process.js'
-import { expandRemoteHome, hostDriverFor, sanitizeSessionName, type HostDriver } from './remote.js'
+import { expandRemoteHome, hostDriverFor, sanitizeSessionName, shQuote, type HostDriver } from './remote.js'
 import { loadSshHosts, type SshHostEntry } from './ssh-config.js'
 import type { Config } from './index.js'
 
@@ -59,6 +59,135 @@ function kimiHome(): string {
 
 /** 包内 assets 目录（lib/panel.js → 包根/assets）。 */
 const ASSETS = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'assets')
+
+/**
+ * Kimi Coding 订阅配额（cc-switch 同款数据源：GET /coding/v1/usages）。
+ * key 从 kimi 自己的 config.toml 读（官方渠道那条 provider；relay 渠道不匹配官方域名、天然跳过）。
+ */
+
+/** 配额窗口（5 小时 / 周 / 月；percent 为已用百分比）。 */
+export interface BalanceWindow {
+  id: 'fiveHour' | 'week' | 'month'
+  percent: number
+  limit?: number
+  remaining?: number
+  resetsAt?: string
+}
+
+/** kimi config.toml 里官方渠道的 api_key（读不到返回 undefined——余额段自动隐藏）。 */
+export function kimiCodingKeyOf(tomlText: string): string | undefined {
+  // provider 块形如 [providers."name"]（config-sync 的机器写格式）；逐块取 base_url/api_key。
+  const blockRe = /\[providers\.(?:("?)([\w.-]+)\1)\]([\s\S]*?)(?=\n\[|\s*$)/g
+  for (const match of tomlText.matchAll(blockRe)) {
+    const body = match[3] ?? ''
+    const baseUrl = /base_url\s*=\s*"([^"]*)"/.exec(body)?.[1] ?? ''
+    // 官方 Kimi Coding 渠道（api.kimi.com / api.moonshot）；relay 等内部渠道不匹配。
+    if (!/api\.kimi\.com|api\.moonshot/.test(baseUrl)) continue
+    const key = /api_key\s*=\s*"([^"]+)"/.exec(body)?.[1]
+    if (key !== undefined && key !== '') return key
+  }
+  return undefined
+}
+
+/** 配额 key 的读取顺序：环境变量 → kimi config.toml 官方渠道；都没有返回 undefined。 */
+function codingKeyOf(): string | undefined {
+  const fromEnv = process.env.KIMI_CODING_API_KEY
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  try {
+    return kimiCodingKeyOf(readFileSync(join(kimiHome(), 'config.toml'), 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+/** 把 /coding/v1/usages 的响应解析成配额窗口。 */
+export function parseKimiUsage(body: unknown): BalanceWindow[] {
+  if (body === null || typeof body !== 'object') return []
+  const root = body as Record<string, unknown>
+  const windows: BalanceWindow[] = []
+  const num = (value: unknown): number | undefined => {
+    const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+    return Number.isFinite(n) ? n : undefined
+  }
+  const push = (id: BalanceWindow['id'], detail: unknown): void => {
+    if (detail === null || typeof detail !== 'object') return
+    const d = detail as Record<string, unknown>
+    const limit = num(d.limit)
+    // 两种形态对齐：官方 used/limit（decimal 字符串）与第三方 limit/remaining（数字）。
+    const used = num(d.used)
+    const remaining = num(d.remaining)
+    if (limit === undefined || limit <= 0) return
+    const usedAbs = used ?? (remaining !== undefined ? limit - remaining : undefined)
+    if (usedAbs === undefined) return
+    windows.push({
+      id,
+      percent: Math.round((Math.max(usedAbs, 0) / limit) * 100),
+      limit,
+      ...remaining !== undefined ? { remaining } : {},
+      ...typeof d.resetTime === 'string' ? { resetsAt: d.resetTime } : {},
+    })
+  }
+  /** 官方形态：window { duration, timeUnit }（proto 枚举）。 */
+  const idOfWindow = (window: unknown): BalanceWindow['id'] | undefined => {
+    if (window === null || typeof window !== 'object') return undefined
+    const w = window as Record<string, unknown>
+    const duration = num(w.duration)
+    const unit = typeof w.timeUnit === 'string' ? w.timeUnit : ''
+    if (duration === 300 && unit === 'TIME_UNIT_MINUTE') return 'fiveHour'
+    if (duration === 7 && unit === 'TIME_UNIT_DAY') return 'week'
+    if (duration === 30 && unit === 'TIME_UNIT_DAY') return 'month'
+    return undefined
+  }
+  /** 第三方形态：直接给秒数。 */
+  const idOfSeconds = (seconds: unknown): BalanceWindow['id'] | undefined => {
+    if (seconds === 18_000) return 'fiveHour'
+    if (seconds === 604_800) return 'week'
+    if (seconds === 2_592_000) return 'month'
+    return undefined
+  }
+  const limits = Array.isArray(root.limits) ? root.limits : []
+  for (const entry of limits) {
+    if (entry === null || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    const id = idOfWindow(record.window) ?? idOfSeconds(record.window ?? record.duration ?? record.windowSeconds)
+    if (id === undefined) continue
+    push(id, record.detail)
+  }
+  // 兜底形态：limits[0] 是 5 小时（无窗口标注时）；usage 是周限额。
+  if (!windows.some(w => w.id === 'fiveHour') && limits[0] !== null && typeof limits[0] === 'object') {
+    push('fiveHour', (limits[0] as Record<string, unknown>).detail)
+  }
+  if (!windows.some(w => w.id === 'week')) push('week', root.usage)
+  return windows
+}
+
+/** 配额缓存（60 秒 TTL；key 层面的单条）。 */
+let balanceCache: { at: number; windows: BalanceWindow[] } | undefined
+
+/** 查 Kimi Coding 订阅配额；没 key 或查询失败返回 undefined（状态条对应段自动隐藏）。 */
+async function kimiBalanceOf(): Promise<BalanceWindow[] | undefined> {
+  if (balanceCache !== undefined && Date.now() - balanceCache.at < 60_000) return balanceCache.windows
+  let key: string | undefined
+  try {
+    key = codingKeyOf()
+  } catch {
+    return undefined
+  }
+  if (key === undefined) return undefined
+  try {
+    const response = await fetch('https://api.kimi.com/coding/v1/usages', {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) return undefined
+    const windows = parseKimiUsage(await response.json())
+    const result = windows.length === 0 ? undefined : windows
+    if (result !== undefined) balanceCache = { at: Date.now(), windows: result }
+    return result
+  } catch {
+    return undefined
+  }
+}
 
 /** git 分支查询的缓存（按 cwd，5 秒 TTL——轮询场景下不打爆 git）。 */
 const branchCache = new Map<string, { branch: string | undefined; at: number }>()
@@ -286,7 +415,14 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           ? await gitBranchOf(status.cwd)
           : await remoteBranchOf(status.host, status.cwd)
       }
-      send(res, 200, { driven: true, ...status, ...branch === undefined ? {} : { branch } })
+      // Kimi Coding 订阅配额（5h/周/月，60 秒缓存；没 key 自动隐藏）。
+      const balance = await kimiBalanceOf()
+      send(res, 200, {
+        driven: true,
+        ...status,
+        ...branch === undefined ? {} : { branch },
+        ...balance === undefined ? {} : { balance },
+      })
     },
   })
 
@@ -350,6 +486,28 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
+  /**
+   * 把接入的会话归进 cwd 对应的工作区（侧边栏分组）：
+   * workspaceRegistry.create 按 canonical path 幂等复用工作区，attachSession
+   * 校验会话头 cwd 精确匹配后挂入（attach 本身幂等，重复调用是 no-op——
+   * 愈合归组修复前接入的会话）。best effort：服务缺席/目录消失/校验失败
+   * 都不影响接入，只记 warn。远程会话不调——workspace 的 realpath 校验
+   * 绑死本机文件系统，远程归组是 DSH 上游缺口。
+   */
+  interface WorkspaceRegistryLike {
+    create(path: string): Promise<{ attachSession(id: SessionId): Promise<void> }>
+  }
+  const groupIntoWorkspace = async (sessionId: SessionId, cwd: string): Promise<void> => {
+    try {
+      const registry = ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined
+      if (registry === undefined) return
+      const workspace = await registry.create(cwd)
+      await workspace.attachSession(sessionId)
+      logger.info('frostfin: 会话 %s 已归入工作区 %s', sessionId, cwd)
+    } catch (error: unknown) {
+      logger.warn('frostfin: 会话 %s 归入工作区（%s）失败，留在未分组：%s', sessionId, cwd, error instanceof Error ? error.message : String(error))
+    }
+  }
   const disposeOpen = webServer.register({
     kind: 'exact',
     path: '/plugins/frostfin/open',
@@ -361,13 +519,14 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           send(res, 400, { error: 'kimiSessionId 必须是 session_ 开头的 kimi 会话 id' })
           return
         }
-        // 幂等：已绑定过的直接返回既有 DSH 会话。
+        const entry = scanKimiSessions(kimiMap).find(item => item.sessionId === kimiSessionId)
+        // 幂等：已绑定过的直接返回既有 DSH 会话（顺带补挂工作区——愈合归组修复前接入的会话）。
         const existing = kimiMap.keyOf(kimiSessionId)
         if (existing !== undefined) {
+          if (entry !== undefined && entry.cwd !== '') await groupIntoWorkspace(existing as SessionId, entry.cwd)
           send(res, 200, { sessionId: existing, reused: true })
           return
         }
-        const entry = scanKimiSessions(kimiMap).find(item => item.sessionId === kimiSessionId)
         const cwd = entry !== undefined && entry.cwd !== '' ? entry.cwd : process.cwd()
         const sessionId = `session-${randomUUID()}` as SessionId
         const handle = await ctx.agents.create({
@@ -382,6 +541,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
           throw new Error('新建会话未路由到 frostfin（请检查月芒霜鳍鲸模式是否启用）')
         }
         const turns = await handle.agent.attachKimiSession(kimiSessionId)
+        await groupIntoWorkspace(sessionId, cwd)
         logger.info('frostfin: 面板接入 kimi 会话 %s → DSH 会话 %s（%d 个回放 turn）', kimiSessionId, sessionId, turns)
         send(res, 200, { sessionId, reused: false, replayTurns: turns })
       } catch (error: unknown) {
@@ -710,6 +870,257 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
+  /**
+   * 传文件到远程会话的服务器（后端 scp）：body { sessionId, paths: string[], dest? }。
+   * 只收本地存在的普通文件；dest 默认 /tmp/frostfin-uploads（白名单绝对路径字符）。
+   * 任务是异步的：POST 立即回 jobId，进度走 GET upload-progress 轮询
+   * （大文件传几分钟，同步 POST 会挂着超时）。
+   */
+  interface UploadJob {
+    state: 'running' | 'done' | 'error'
+    bytesDone: number
+    bytesTotal: number
+    fileIndex: number
+    fileCount: number
+    currentFile: string
+    files: string[]
+    error?: string
+    updatedAt: number
+  }
+  const uploadJobs = new Map<string, UploadJob>()
+
+  const disposeUploadRemote = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/upload-remote',
+    handler: async (req, res) => {
+      try {
+        const body = await readBody(req) as { sessionId?: unknown; paths?: unknown; dest?: unknown }
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+        const agent = ctx.agents.get(sessionId as SessionId)
+        if (!(agent instanceof FrostfinAgent)) {
+          send(res, 404, { ok: false, error: '会话不存在或不是 frostfin 驱动' })
+          return
+        }
+        const host = agent.remoteHost
+        if (host === undefined) {
+          send(res, 400, { ok: false, error: '本地会话无需上传——文件本来就在本机' })
+          return
+        }
+        const paths = Array.isArray(body.paths) ? body.paths.filter((p): p is string => typeof p === 'string' && p !== '') : []
+        if (paths.length === 0) {
+          send(res, 400, { ok: false, error: 'paths 不能为空' })
+          return
+        }
+        const missing = paths.filter(p => !existsSync(p) || !statSync(p).isFile())
+        if (missing.length > 0) {
+          send(res, 400, { ok: false, error: `不是本地存在的普通文件：${missing.join('、')}` })
+          return
+        }
+        const dest = typeof body.dest === 'string' && body.dest.trim() !== '' ? body.dest.trim() : '/tmp/frostfin-uploads'
+        if (!/^\/[\w./-]+$/.test(dest)) {
+          send(res, 400, { ok: false, error: '目标目录必须是安全的绝对路径（仅字母数字与 ./-_）' })
+          return
+        }
+        // 顺带清扫 10 分钟前的旧任务（注册表是进程内存，不持久化）。
+        const now = Date.now()
+        for (const [id, job] of uploadJobs) {
+          if (now - job.updatedAt > 600_000) uploadJobs.delete(id)
+        }
+        const jobId = randomUUID()
+        const job: UploadJob = { state: 'running', bytesDone: 0, bytesTotal: 0, fileIndex: 0, fileCount: paths.length, currentFile: '', files: [], updatedAt: now }
+        uploadJobs.set(jobId, job)
+        send(res, 200, { ok: true, jobId })
+        void hostDriverFor(host, config.sshCommand, config.scpCommand).uploadLocal(paths, dest, (progress) => {
+          Object.assign(job, progress, { updatedAt: Date.now() })
+        }).then((files) => {
+          job.state = 'done'
+          job.files = files
+          job.updatedAt = Date.now()
+          logger.info('frostfin: 面板上传 %d 个文件到 %s:%s', files.length, host.alias, dest)
+        }).catch((error: unknown) => {
+          job.state = 'error'
+          job.error = error instanceof Error ? error.message : String(error)
+          job.updatedAt = Date.now()
+          logger.warn('frostfin: 面板上传失败（%s:%s）：%s', host.alias, dest, job.error)
+        })
+      } catch (error: unknown) {
+        send(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  })
+
+  /** 上传进度轮询：GET /plugins/frostfin/upload-progress?jobId=… → 任务快照。 */
+  const disposeUploadProgress = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/upload-progress',
+    handler: (req, res) => {
+      const url = new URL(req.url ?? '', 'http://localhost')
+      const job = uploadJobs.get(url.searchParams.get('jobId') ?? '')
+      if (job === undefined) {
+        send(res, 404, { ok: false, error: '任务不存在（可能已过期清扫）' })
+        return
+      }
+      send(res, 200, { ok: true, ...job })
+    },
+  })
+
+  /**
+   * 传文件选择器的目录列举：GET /plugins/frostfin/ls?dir=…（缺省主目录；支持 ~ 展开）。
+   * 只允许主目录子树——本机 HTTP 没有会话鉴权，不能给浏览器侧任意探盘的口子。
+   * 排序：目录按名称；文件按 mtime 新的在前（「下载里最新的几个」是主要场景）。
+   */
+  const disposeLs = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/ls',
+    handler: (req, res) => {
+      const url = new URL(req.url ?? '', 'http://localhost')
+      const raw = url.searchParams.get('dir') ?? '~'
+      const expanded = raw === '~' ? homedir() : raw.startsWith(`~${sep}`) || raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw
+      const dir = resolve(expanded)
+      const home = homedir()
+      if (dir !== home && !dir.startsWith(home + sep)) {
+        send(res, 403, { ok: false, error: '只允许浏览主目录以内的路径' })
+        return
+      }
+      let names: string[]
+      try {
+        names = readdirSync(dir)
+      } catch (error: unknown) {
+        send(res, 400, { ok: false, error: `目录读不到：${error instanceof Error ? error.message : String(error)}` })
+        return
+      }
+      const dirs: string[] = []
+      const files: { name: string; size: number; mtime: number }[] = []
+      for (const name of names) {
+        try {
+          const st = statSync(join(dir, name)) // statSync 跟随软链；断链/无权限的条目直接跳过
+          if (st.isDirectory()) dirs.push(name)
+          else if (st.isFile()) files.push({ name, size: st.size, mtime: st.mtimeMs })
+        } catch { /* 跳过坏条目 */ }
+      }
+      dirs.sort((x, y) => x.localeCompare(y))
+      files.sort((x, y) => y.mtime - x.mtime)
+      const truncated = dirs.length > 500 || files.length > 500
+      send(res, 200, {
+        ok: true,
+        dir,
+        parent: dir === home ? null : dirname(dir),
+        dirs: dirs.slice(0, 500),
+        files: files.slice(0, 500),
+        truncated,
+      })
+    },
+  })
+
+  /**
+   * 工作区文件面（文件树 tab 与 @ 补全共用）：
+   * - GET /plugins/frostfin/files?sessionId&dir —— 单层列举（dir 相对会话 cwd，缺省根）
+   * - GET /plugins/frostfin/complete?sessionId&q —— 递归模糊搜索（相对路径子串，剪枝重型目录）
+   * 范围锁在会话 cwd 子树内；本地 sh、远程 ssh 经 driver.execProbe 跑同一段
+   * POSIX 脚本（一视同仁）。尺寸用 wc -c 拿（绕开 GNU/BSD stat 的格式分歧）。
+   */
+  const workspaceOf = (sessionId: string): { cwd: string; driver: HostDriver } | undefined => {
+    const agent = ctx.agents.get(sessionId as SessionId)
+    if (!(agent instanceof FrostfinAgent)) return undefined
+    const status = agent.getKimiStatus()
+    if (status.cwd === undefined || status.cwd.trim() === '') return undefined
+    const host = status.host === undefined ? undefined : loadSshHosts(config.sshConfigFile).find(candidate => candidate.alias === status.host)
+    if (status.host !== undefined && host === undefined) return undefined
+    return { cwd: status.cwd.replace(/\/+$/, ''), driver: hostDriverFor(host, config.sshCommand) }
+  }
+  const NOENT = '__FROSTFIN_NOENT__'
+  const disposeFiles = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/files',
+    handler: async (req, res) => {
+      const url = new URL(req.url ?? '', 'http://localhost')
+      const ws = workspaceOf(url.searchParams.get('sessionId') ?? '')
+      if (ws === undefined) {
+        send(res, 404, { ok: false, error: '会话不存在、不是 frostfin 驱动或暂无工作区' })
+        return
+      }
+      const rel = posix.normalize(url.searchParams.get('dir') ?? '.')
+      if (rel.startsWith('/') || rel === '..' || rel.startsWith('../')) {
+        send(res, 403, { ok: false, error: '只允许浏览会话工作区以内的路径' })
+        return
+      }
+      const abs = rel === '.' ? ws.cwd : `${ws.cwd}/${rel}`
+      const script = [
+        `cd ${shQuote(abs)} 2>/dev/null || { echo ${NOENT}; exit 0; }`,
+        // * 之外补两个点文件 glob；无匹配时 glob 保持字面，-e 闸跳过。
+        `for f in * .[!.]* ..?*; do [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd\\t%s\\n' "$f"; else s=$(wc -c < "$f" 2>/dev/null || echo 0); printf 'f\\t%s\\t%s\\n' "$s" "$f"; fi; done`,
+      ].join('\n')
+      const probe = await ws.driver.execProbe(script, 15_000)
+      if (probe.error !== null) {
+        send(res, 502, { ok: false, error: probe.stderr.trim() || probe.error.message })
+        return
+      }
+      if (probe.stdout.includes(NOENT)) {
+        send(res, 404, { ok: false, error: `目录不存在：${rel}` })
+        return
+      }
+      const dirs: string[] = []
+      const files: { name: string; size: number }[] = []
+      for (const line of probe.stdout.split('\n')) {
+        const parts = line.split('\t')
+        if (parts[0] === 'd' && parts.length >= 2) dirs.push(parts.slice(1).join('\t'))
+        else if (parts[0] === 'f' && parts.length >= 3) {
+          const size = Number(parts[1]!.trim())
+          files.push({ name: parts.slice(2).join('\t'), size: Number.isFinite(size) ? size : 0 })
+        }
+      }
+      dirs.sort((x, y) => x.localeCompare(y))
+      files.sort((x, y) => x.name.localeCompare(y.name))
+      const parent = rel === '.' ? null : posix.dirname(rel)
+      send(res, 200, { ok: true, dir: rel, parent, dirs, files })
+    },
+  })
+  const disposeComplete = webServer.register({
+    kind: 'exact',
+    path: '/plugins/frostfin/complete',
+    handler: async (req, res) => {
+      const url = new URL(req.url ?? '', 'http://localhost')
+      const ws = workspaceOf(url.searchParams.get('sessionId') ?? '')
+      if (ws === undefined) {
+        send(res, 404, { ok: false, error: '会话不存在、不是 frostfin 驱动或暂无工作区' })
+        return
+      }
+      const q = (url.searchParams.get('q') ?? '').trim()
+      if (q === '') {
+        send(res, 200, { ok: true, entries: [] })
+        return
+      }
+      // 远端 grep 粗筛（200 行）→ 本地排名（basename 命中优先、短路径优先）取前 20。
+      const script = [
+        `cd ${shQuote(ws.cwd)} 2>/dev/null || { echo ${NOENT}; exit 0; }`,
+        `find . \\( -name .git -o -name node_modules -o -name .next -o -name dist -o -name __pycache__ -o -name .venv -o -name venv -o -name target -o -name .cache \\) -prune -o -type f -print 2>/dev/null | grep -i -F -e ${shQuote(q)} | head -200`,
+      ].join('\n')
+      const probe = await ws.driver.execProbe(script, 20_000)
+      if (probe.error !== null) {
+        send(res, 502, { ok: false, error: probe.stderr.trim() || probe.error.message })
+        return
+      }
+      if (probe.stdout.includes(NOENT)) {
+        send(res, 404, { ok: false, error: '工作区目录不存在' })
+        return
+      }
+      const lq = q.toLowerCase()
+      const entries = probe.stdout.split('\n')
+        .map(line => line.trim())
+        .filter(line => line.startsWith('./'))
+        .map(line => line.slice(2))
+        .filter(path => path !== '' && !path.includes('\t'))
+        .map(path => ({ path, dir: posix.dirname(path) === '.' ? '' : posix.dirname(path), name: posix.basename(path) }))
+        .sort((a, b) => {
+          const tierA = a.name.toLowerCase().includes(lq) ? 0 : 1
+          const tierB = b.name.toLowerCase().includes(lq) ? 0 : 1
+          return tierA - tierB || a.path.length - b.path.length || a.path.localeCompare(b.path)
+        })
+        .slice(0, 20)
+      send(res, 200, { ok: true, entries })
+    },
+  })
+
   // 更新 kimi Code 到最新版：无 host 更新本机，有 host 经 ssh 更新对应服务器。
   // 优先 `kimi update`；遇到"该平台不支持自动更新"（如 Linux 原生包）回退官方安装脚本。
   const disposeUpdateKimi = webServer.register({
@@ -756,7 +1167,7 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     },
   })
 
-  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / reconnect / set-config / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / update-kimi / kimi-version）')
+  logger.info('frostfin: 面板端点已注册（kimi-sessions / open / logo.png / status / reconnect / set-config / pending-questions / answer-question / remote-hosts / remote-sessions / open-remote / new-remote / delete-session / upload-remote / upload-progress / ls / files / complete / update-kimi / kimi-version）')
   return () => {
     disposeList()
     disposeLogo()
@@ -771,6 +1182,11 @@ export function registerPanelRoutes(ctx: Context, logger: Logger, kimiMap: KimiS
     disposeOpenRemote()
     disposeNewRemote()
     disposeDeleteSession()
+    disposeUploadRemote()
+    disposeUploadProgress()
+    disposeLs()
+    disposeFiles()
+    disposeComplete()
     disposeUpdateKimi()
     disposeKimiVersion()
   }

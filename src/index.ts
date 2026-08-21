@@ -49,6 +49,9 @@ export const Config = z.object({
   sshCommand: z.string()
     .description('远程线：ssh 可执行名/包装脚本（测试可注入假 ssh）')
     .default('ssh'),
+  scpCommand: z.string()
+    .description('远程线：scp 可执行名/包装脚本（传文件功能；测试可注入假 scp）')
+    .default('scp'),
 })
 
 export interface Config {
@@ -65,6 +68,7 @@ export interface Config {
   primeCatalog: boolean
   sshConfigFile: string
   sshCommand: string
+  scpCommand: string
 }
 
 /**

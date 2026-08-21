@@ -17,6 +17,9 @@
  */
 
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
+import { basename } from 'node:path'
 import type { SshHostEntry } from './ssh-config.js'
 
 /** tmux 会话名白名单化（字母数字 . _ -，其余压成 -，截断 48）。 */
@@ -228,6 +231,52 @@ export function killRemoteTmuxSession(host: SshHostEntry, sessionName: string, s
   })
 }
 
+/** 一个文件的上传步骤：scp 到远端临时名 → mv 落最终名（失败时 rm 清半截）。 */
+export interface UploadStep {
+  /** 本地源路径。 */
+  local: string
+  /** 远端最终路径（destDir/basename）。 */
+  remote: string
+  /** 远端临时路径：scp 先传这里——stat 它的字节数折算进度，mv 同分区原子落位。 */
+  temp: string
+  /** scp argv。目标必须裸路径：新版 OpenSSH 的 scp 走 SFTP（不过 shell），引号会被当字面字符。 */
+  scp: string[]
+  /** ssh argv：查临时文件字节数（GNU stat -c，兜底 BSD stat -f，都没有回 0）。 */
+  stat: string[]
+  /** ssh argv：mv 临时 → 最终（走远端 shell，shQuote 引号）。 */
+  mv: string[]
+  /** ssh argv：失败时清半截临时文件（best effort）。 */
+  rm: string[]
+}
+
+/**
+ * 构建一次上传的全部 argv：mkdir 建目录 + 每文件一条 scp/mv/rm/stat 步骤。
+ * 临时名带随机后缀与同批序号：并发/同批同 basename 不撞车；进度观测期间
+ * 远端字节数从 0 单调涨（不受同名旧文件干扰）。
+ */
+export function buildUploadArgv(host: SshHostEntry, paths: readonly string[], destDir: string): { mkdir: string[]; steps: UploadStep[] } {
+  const { dest, sshArgs } = remoteTargetOf(host)
+  const dir = destDir.replace(/\/$/, '')
+  const sshBase = [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', dest]
+  const suffix = randomUUID().slice(0, 8)
+  return {
+    mkdir: [...sshBase, `mkdir -p ${shQuote(destDir)}`],
+    steps: paths.map((local, i) => {
+      const remote = `${dir}/${basename(local)}`
+      const temp = `${remote}.frostfin-part-${suffix}-${i}`
+      return {
+        local,
+        remote,
+        temp,
+        scp: [...sshArgs, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '--', local, `${dest}:${temp}`],
+        stat: [...sshBase, `stat -c %s ${shQuote(temp)} 2>/dev/null || stat -f %z ${shQuote(temp)} 2>/dev/null || echo 0`],
+        mv: [...sshBase, `mv ${shQuote(temp)} ${shQuote(remote)}`],
+        rm: [...sshBase, `rm -f ${shQuote(temp)}`],
+      }
+    }),
+  }
+}
+
 /**
  * 远程路径的 ~ 展开：`~` 与 `~/x` → 远程 home（探针握手时解析）；
  * `~user/x` 形式不展开（kimi 的 cwd 校验不走 shell，展开了也是错路径，不如原样报错）。
@@ -241,7 +290,7 @@ export function expandRemoteHome(cwd: string, homeDir: string | undefined): stri
 }
 
 /** POSIX 单引号包裹（内容里的单引号按 '\'' 闭合重开）。 */
-function shQuote(value: string): string {
+export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
@@ -257,9 +306,23 @@ export function probeGitBranch(host: SshHostEntry, cwd: string, sshBin = 'ssh'):
   })
 }
 
+/** 上传进度快照（driver → 面板任务注册表 → UI 进度条）。 */
+export interface UploadProgress {
+  /** 已落远端字节数（同批所有文件累计）。 */
+  bytesDone: number
+  /** 同批总字节数。 */
+  bytesTotal: number
+  /** 当前传第几个文件（1 起）。 */
+  fileIndex: number
+  /** 同批文件总数。 */
+  fileCount: number
+  /** 当前文件名（basename）。 */
+  currentFile: string
+}
+
 /**
  * 宿主驱动接口：本地与远程一视同仁的主机操作面——体检、组装 ACP 进程 spawn、
- * 跑探针脚本、探活（双写防护）、杀 tmux 会话、查 git 分支。
+ * 跑探针脚本、探活（双写防护）、杀 tmux 会话、查 git 分支、传文件。
  * 核心代码（panel/factory）只经此接口，不再有本地/远程分叉；平台差异
  * （POSIX vs 将来的 Windows）与位置差异都收口在这一层。
  * 纪律：先立约——没有测试的第二实现不写。
@@ -279,6 +342,13 @@ export interface HostDriver {
   killSession(sessionName: string): Promise<void>
   /** 查某目录的 git 分支（状态条用；非仓库/失败回落 undefined）。 */
   probeGitBranch(cwd: string): Promise<string | undefined>
+  /**
+   * 把本地文件上传到目标目录，返回远端最终路径列表。
+   * 远程：逐文件 scp 到临时名 + mv 原子落位——scp 无 TTY 不自报进度，
+   * 期间每 2 秒 stat 远端临时文件的字节数折算 onProgress；失败清半截临时文件。
+   * 本地：逐文件复制，每文件完成时报一次进度。
+   */
+  uploadLocal(paths: readonly string[], destDir: string, onProgress?: (progress: UploadProgress) => void): Promise<string[]>
 }
 
 /** execFile 的 Promise 封装（永不 reject，对齐回调语义）。 */
@@ -309,10 +379,25 @@ const posixLocal: HostDriver = {
     const branch = stdout.trim()
     return error !== null || branch === '' || branch === 'HEAD' ? undefined : branch
   },
+  uploadLocal: async (paths, destDir, onProgress) => {
+    await runCollect('mkdir', ['-p', destDir], 10_000)
+    const sizes = paths.map(p => statSync(p).size)
+    const total = sizes.reduce((sum, n) => sum + n, 0)
+    let finished = 0
+    for (const [i, p] of paths.entries()) {
+      const name = basename(p)
+      onProgress?.({ bytesDone: finished, bytesTotal: total, fileIndex: i + 1, fileCount: paths.length, currentFile: name })
+      const { error } = await runCollect('cp', [p, destDir], 300_000)
+      if (error !== null) throw new Error(`本地复制失败（${name}）：${error.message}`)
+      finished += sizes[i]!
+      onProgress?.({ bytesDone: finished, bytesTotal: total, fileIndex: i + 1, fileCount: paths.length, currentFile: name })
+    }
+    return paths.map(p => `${destDir.replace(/\/$/, '')}/${basename(p)}`)
+  },
 }
 
 /** 远程 POSIX 宿主（ssh+tmux）：所有操作经 ssh 承载（shim/fifo/探针脚本）。 */
-function posixSshTmuxDriver(host: SshHostEntry, sshBin: string): HostDriver {
+function posixSshTmuxDriver(host: SshHostEntry, sshBin: string, scpBin = 'scp'): HostDriver {
   return {
     name: 'posix-ssh-tmux',
     check: () => checkRemoteHost(host, sshBin),
@@ -327,6 +412,60 @@ function posixSshTmuxDriver(host: SshHostEntry, sshBin: string): HostDriver {
     probeLiveCwds: () => probeLiveKimiCwds(host, sshBin),
     killSession: (sessionName) => killRemoteTmuxSession(host, sessionName, sshBin),
     probeGitBranch: (cwd) => probeGitBranch(host, cwd, sshBin),
+    uploadLocal: async (paths, destDir, onProgress) => {
+      const { mkdir, steps } = buildUploadArgv(host, paths, destDir)
+      const made = await runCollect(sshBin, mkdir, 15_000)
+      if (made.error !== null) throw new Error(`远端建目录失败：${made.stderr.trim() || made.error.message}`)
+      const sizes = paths.map(p => statSync(p).size)
+      const total = sizes.reduce((sum, n) => sum + n, 0)
+      const uploaded: string[] = []
+      let finished = 0
+      for (const [i, step] of steps.entries()) {
+        const report = (current: number): void => onProgress?.({
+          bytesDone: Math.min(finished + current, total),
+          bytesTotal: total,
+          fileIndex: i + 1,
+          fileCount: steps.length,
+          currentFile: basename(step.local),
+        })
+        report(0)
+        // scp 无 TTY 不自报进度：每 2 秒 stat 远端临时文件的字节数折算。
+        // inFlight 闸：上一次 stat 没回来不叠加（慢链路下 ssh 建连可能超 2 秒）。
+        let inFlight = false
+        const timer = setInterval(() => {
+          if (inFlight) return
+          inFlight = true
+          void runCollect(sshBin, step.stat, 10_000).then(({ stdout, error }) => {
+            if (error === null) {
+              const size = Number(stdout.trim().split('\n').pop())
+              if (Number.isFinite(size) && size > 0) report(Math.min(size, sizes[i]!))
+            }
+          }).finally(() => { inFlight = false })
+        }, 2_000)
+        let scpError: Error | null = null
+        let scpStderr = ''
+        try {
+          const scp = await runCollect(scpBin, step.scp, 3_600_000)
+          scpError = scp.error
+          scpStderr = scp.stderr
+        } finally {
+          clearInterval(timer)
+        }
+        if (scpError !== null) {
+          await runCollect(sshBin, step.rm, 10_000)
+          throw new Error(`scp 失败（${basename(step.local)}）：${scpStderr.trim() || scpError.message}`)
+        }
+        const moved = await runCollect(sshBin, step.mv, 15_000)
+        if (moved.error !== null) {
+          await runCollect(sshBin, step.rm, 10_000)
+          throw new Error(`远端落位失败（${basename(step.local)}）：${moved.stderr.trim() || moved.error.message}`)
+        }
+        finished += sizes[i]!
+        report(0)
+        uploaded.push(step.remote)
+      }
+      return uploaded
+    },
   }
 }
 
@@ -337,8 +476,8 @@ function posixSshTmuxDriver(host: SshHostEntry, sshBin: string): HostDriver {
  * - host 缺省 = 本地：按 process.platform 分。Windows 本地宿主暂未实现——
  *   明确报错而不是跑出莫名其妙的 POSIX 错误（无测试不实现）。
  */
-export function hostDriverFor(host: SshHostEntry | undefined, sshBin = 'ssh'): HostDriver {
-  if (host !== undefined) return posixSshTmuxDriver(host, sshBin)
+export function hostDriverFor(host: SshHostEntry | undefined, sshBin = 'ssh', scpBin?: string): HostDriver {
+  if (host !== undefined) return posixSshTmuxDriver(host, sshBin, scpBin ?? 'scp')
   if (process.platform === 'win32') throw new Error('frostfin: Windows 本地宿主暂未支持（HostDriver 目前只有 POSIX 实现）')
   return posixLocal
 }
