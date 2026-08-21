@@ -43,7 +43,7 @@ pnpm test           # node --test test/*.test.mjs
 
 **重要**：测试直接 import `../lib/*.js`（构建产物），改完 `src/` 必须先 `pnpm build` 再 `pnpm test`，否则测的是旧代码。
 
-最近一次验证：`pnpm build` 通过，`pnpm test` 84 个测试全部通过（约 30 秒，含真实子进程的集成测试）。
+最近一次验证：`pnpm build` 通过，`pnpm test` 96 个测试全部通过（约 20 秒，含真实子进程的集成测试）。
 
 ## 目录结构与模块划分
 
@@ -67,9 +67,13 @@ src/                  宿主半身（Node 侧，tsc 编译到 lib/）
   remote.ts           远程线：ssh+tmux shim 命令构建、远程体检、活 TUI 探针（双写防护提示）+ HostDriver 宿主驱动接口（hostDriverFor 分派点：本地/远程一视同仁，posix-local 与 posix-ssh-tmux 双实现，Windows 将来在此分派）
   ssh-config.ts       ~/.ssh/config 解析（OpenSSH/VS Code 语义：Host 块、Include、first-obtained-wins）
 src/client/           浏览器半身（React TSX，esbuild 打包；tsc 排除此目录）
-  index.ts            槽位注册：会话面板 tab、状态条 dock、提问模态框、输入区工具行按钮（thinking/权限模式）
+  index.ts            槽位注册：会话面板 tab、「文件」文件树 tab、状态条 dock、提问模态框、输入区工具行按钮（thinking/权限模式/传文件/折叠步骤）、@ 工作区文件补全 source（inputTriggers 流水线）
   SessionsPanel.tsx   「月芒霜鳍鲸」tab：本地/远程 kimi 会话列表与接入
-  StatusDock.tsx      输入框下方状态条（模型/thinking/模式/git 分支/上下文占用/cwd，3 秒轮询）
+  FilePanel.tsx       「文件」tab：会话工作区文件树（懒加载；点文件复制相对路径；本地/远程一视同仁）
+  FoldStepsPill.tsx   「折叠步骤」开关：CSS 钩子（data-tool / data-variant="think"）隐藏 Think 与工具行；DSH 改钩子名则静默失效（无害降级）
+  collapse-nodes.ts   单条消息折叠：长输入/输出折成一小段（整壳限高 10em + 渐变 + 壳内绝对定位按钮——slot 包装是 display:contents，壳自身才是可压的盒）；折叠后抵消 DSH 底部吸附回拨并把被折消息定位到屏幕中央（立即一次 + 200ms 再咬一次）；MutationObserver 自愈
+  StatusDock.tsx      输入框下方状态条（模型/thinking/模式/git 分支/上下文占用/Kimi Coding 配额/cwd，3 秒轮询）
+  UploadPill.tsx      输入区「传文件」按钮：本机文件 scp 到远程会话的服务器（仅远程会话显示），带实时进度条
   QuestionModal.tsx   AskUserQuestion 多选模态框
 presets/frostfin/     「月芒霜鳍鲸」preset 定义（preset.yml + agent.cordis.yml，最小 persona 行）
 cordis.patch.yml      DSH profile 补丁：insert frostfin 行、agent-presets 默认改为 frostfin、禁用 agent-loop
@@ -88,7 +92,7 @@ assets/               图片素材（含《原神》版权素材，不在 MIT �
 - **进程自愈**：kimi 进程崩溃后，下一个 prompt 自动重连（重 spawn + `session/load` 吞回放）。远程会话经 ssh+tmux 复挂活 pane；pane 还在但 kimi 死透的僵尸态由 shim 就绪闸发现、`respawn-pane -k` 原位重启（死 pane 自愈）。
 - **preset 分发**：`shadow-native.ts` 在 cordis isolate 里挂原生 agent-loop 并**捕获**其工厂（不占工厂位）；「月芒霜鳍鲸」preset 的会话走 kimi，其他 preset 委托原生 loop，互不干扰。会话创建后驱动方锁定，不静默换脑。
 - **关停阶梯**（照抄 DSH subagent-acp）：stdin EOF → 等 `disposeEofGraceMs` → SIGTERM → 等 `disposeGraceMs` → SIGKILL → 整树退出证明。
-- **面板端点**（`src/panel.ts`，webServer 服务缺失的 headless 宿主自动跳过）：`GET kimi-sessions`、`POST open`、`GET status`、`POST reconnect`、`POST set-config`、`GET/POST pending-questions/answer-question`、`GET remote-hosts`、`GET remote-sessions`、`POST open-remote`、`POST new-remote`、`POST delete-session`（本地/远程共用）、`POST update-kimi`、`GET kimi-version`、`GET logo.png`。
+- **面板端点**（`src/panel.ts`，webServer 服务缺失的 headless 宿主自动跳过）：`GET kimi-sessions`、`POST open`（幂等接入，顺带把会话归进 cwd 对应的工作区——workspaceRegistry，best effort；远程会话受 DSH realpath 校验所限不归组）、`GET status`、`POST reconnect`、`POST set-config`、`GET/POST pending-questions/answer-question`、`GET remote-hosts`、`GET remote-sessions`、`POST open-remote`、`POST new-remote`、`POST delete-session`（本地/远程共用）、`POST upload-remote`（异步任务，回 jobId）、`GET upload-progress`（轮询进度）、`GET ls`（传文件选择器的目录列举，限主目录子树）、`GET files`（工作区文件树单层列举）、`GET complete`（工作区递归模糊搜索，@ 补全数据源——两者均锁在会话 cwd 子树，经 driver.execProbe 本地/远程同一段 POSIX 脚本）、`POST update-kimi`、`GET kimi-version`、`GET logo.png`。
 - **运行时数据**：`~/.frostfin/`（kimi-sessions.json 绑定映射、kimi-session-prefs.json 档位记忆、model-catalog.json 模型缓存）——卸载插件时刻意保留，重装可续。
 
 ## 开发约定（代码风格）
