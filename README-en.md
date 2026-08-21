@@ -148,7 +148,7 @@ npx @deepseek-ai/dsh plugin --profile web add .
 
 Once installed: the new "Moonglow Frostfin Whale" mode becomes the default automatically; the conversation view gains a "月芒霜鳍鲸" tab (local and remote kimi sessions with one-click attach); no model configuration is needed — DSH's model gate is satisfied by a nominal route. **The full feature guide (panel / remote / commands / permission modes / FAQ) lives at [docs/guide.md](docs/guide.md) (Chinese).**
 
-**Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
+**Running headless**: for script/CI use without the Web UI, install into the headless profile instead — `npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`. Only the host half takes effect there (kimi still drives the agent loop); the panel endpoints and input-row buttons do not appear.
 
 **Upgrade**: `npx @deepseek-ai/dsh plugin --profile web update dsh-frostfin`, then restart `dsh web`. `dsh plugin` forwards its arguments verbatim to pnpm — so `add dsh-frostfin@latest` or a pinned `add dsh-frostfin@0.2.0` works too.
 

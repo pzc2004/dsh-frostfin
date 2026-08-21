@@ -150,7 +150,7 @@ npx @deepseek-ai/dsh plugin --profile web add .
 
 装好后：新模式「月芒霜鳍鲸」自动成为默认模式；会话视图环多出「月芒霜鳍鲸」tab（kimi 会话列表，一键接入）；无需任何模型配置——DSH 的模型门禁由名义路由喂饱。**完整功能手册（面板/远程/命令/权限模式/FAQ）见 [docs/guide.md](docs/guide.md)。**
 
-**headless 也想要**：`npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
+**无界面运行（headless）**：脚本/CI 等不带 Web UI 的场景，换装到 headless profile——`npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`。此时只有宿主半身生效（agent loop 照常由 kimi 驱动），面板端点与输入区按钮不出现。
 
 **升级**：`npx @deepseek-ai/dsh plugin --profile web update dsh-frostfin`，然后重启 `dsh web` 生效。`dsh plugin` 的参数原样转发给 pnpm——所以 `add dsh-frostfin@latest` 或指定版本 `add dsh-frostfin@0.2.0` 也可以。
 
