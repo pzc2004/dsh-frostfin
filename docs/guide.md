@@ -14,7 +14,7 @@
 - [图片、审批与提问](#图片审批与提问)
 - [状态条](#状态条)
 - [会话生命周期与数据文件](#会话生命周期与数据文件)
-- [卸载与清理](#卸载与清理)
+- [升级与卸载](#升级与卸载)
 - [常见问题（FAQ）](#常见问题faq)
 
 ---
@@ -133,13 +133,17 @@ DSH 侧两个开关的注意事项：
   - `model-catalog.json`：模型目录缓存。
 - **远程留下的东西**（服务器上）：tmux 会话（`frostfin-*`）和 `/tmp/frostfin-*` 的 fifo 文件——fifo 随系统重启消散；tmux 会话想收就 `tmux kill-session -t <名字>`。
 
-## 卸载与清理
+## 升级与卸载
 
 ```sh
+# 升级（dsh plugin 的参数原样转发给 pnpm——add dsh-frostfin@latest 或 @版本号 也行）
+npx @deepseek-ai/dsh plugin --profile web update dsh-frostfin
+
+# 卸载
 npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin
 ```
 
-卸载自动撤销一切注册，并把同步进 kimi `config.toml` 的托管块摘除（你的 kimi 配置原样恢复）。`~/.frostfin/` 下的绑定与缓存**刻意保留**以便重装续聊；彻底清除再 `rm -rf ~/.frostfin`。远程服务器上的 tmux 会话如需清理见上一节。
+升级后重启 `dsh web` 生效。卸载自动撤销一切注册，并把同步进 kimi `config.toml` 的托管块摘除（你的 kimi 配置原样恢复）。`~/.frostfin/` 下的绑定与缓存**刻意保留**以便重装续聊；彻底清除再 `rm -rf ~/.frostfin`。远程服务器上的 tmux 会话如需清理见上一节。
 
 ## 常见问题（FAQ）
 

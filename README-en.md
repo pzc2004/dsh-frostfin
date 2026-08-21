@@ -150,6 +150,8 @@ Once installed: the new "Moonglow Frostfin Whale" mode becomes the default autom
 
 **Want headless too**: `npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
 
+**Upgrade**: `npx @deepseek-ai/dsh plugin --profile web update dsh-frostfin`, then restart `dsh web`. `dsh plugin` forwards its arguments verbatim to pnpm — so `add dsh-frostfin@latest` or a pinned `add dsh-frostfin@0.2.0` works too.
+
 **Uninstall**: `npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin` — uninstalling reverts every registration and removes the managed block synced into kimi's `config.toml` (your kimi config is restored verbatim). Session bindings and the model cache under `~/.frostfin/` are kept so a reinstall can resume; to wipe them completely, `rm -rf ~/.frostfin`.
 
 ## Platform support

@@ -152,6 +152,8 @@ npx @deepseek-ai/dsh plugin --profile web add .
 
 **headless 也想要**：`npx @deepseek-ai/dsh plugin --profile headless add dsh-frostfin`
 
+**升级**：`npx @deepseek-ai/dsh plugin --profile web update dsh-frostfin`，然后重启 `dsh web` 生效。`dsh plugin` 的参数原样转发给 pnpm——所以 `add dsh-frostfin@latest` 或指定版本 `add dsh-frostfin@0.2.0` 也可以。
+
 **卸载**：`npx @deepseek-ai/dsh plugin --profile web remove dsh-frostfin`——卸载会自动撤销一切注册，并把同步进 kimi `config.toml` 的托管块摘除（你的 kimi 配置原样恢复）。`~/.frostfin/` 下的会话绑定与模型缓存会保留以便重装续聊；想彻底清除再 `rm -rf ~/.frostfin`。
 
 ## 平台支持
