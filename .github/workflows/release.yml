@@ -1,0 +1,41 @@
+# 发布流水线：GitHub Release 发布 → 构建 + 全量测试 → npm publish。
+#
+# 凭证走 npm Trusted Publishing（OIDC）：无长期 token——npm 后台把本包绑定到
+# 「pzc2004/dsh-frostfin 仓库的 release.yml workflow（environment: npm）」，
+# 发布时 GitHub 发短期 OIDC 凭证换发布权（天然绕开 2FA，且带 provenance 徽章）。
+# GitHub 环境 npm 挂 required reviewers——发布前人工点一下（替代 2FA 的闸门）。
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # OIDC（trusted publishing 的凭证来源）
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0 # 与本仓库 pnpm-lock.yaml 世代一致
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # 集成测试的 tmux 用例（缺 tmux 会自动 skip；装上跑全量）
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      # 版本闸：tag（v0.2.0）必须与 package.json 一致——防 bump 漏提交
+      - run: |
+          PKG=$(node -p "require('./package.json').version")
+          [ "$PKG" = "${GITHUB_REF_NAME#v}" ] || { echo "版本不一致：package.json=$PKG tag=$GITHUB_REF_NAME"; exit 1; }
+      # trusted publishing 需要 npm CLI ≥ 11.5.1（node 22 自带的是 npm 10.x）
+      - run: npm install -g npm@^11.5.1
+      - run: npm publish --provenance --access public

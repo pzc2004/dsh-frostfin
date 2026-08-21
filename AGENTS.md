@@ -137,6 +137,8 @@ npx @deepseek-ai/dsh web    # 重启生效
 
 安装时 `cordis.patch.yml` 生效：插入 frostfin 插件行、把「月芒霜鳍鲸」设为默认模式、禁用原生 agent-loop。package.json 的 `dsh.client.inject` 声明浏览器半身注入点。卸载（`dsh plugin --profile web remove dsh-frostfin`）自动撤销一切注册并摘除 kimi 配置托管块。前置条件：本机已装 Kimi Code 并 `/login`（登录态由 `kimi acp` 子进程直接复用）。
 
+**发布（CI）**：bump `package.json` 版本并提交 → GitHub 上发 Release（tag 与版本一致，如 `v0.2.0`）→ `.github/workflows/release.yml` 自动跑全量测试 → `npm publish --provenance`。凭证是 Trusted Publishing（OIDC，无 token）；GitHub 环境 `npm` 挂 required reviewers 做人工闸门。npm 后台Trusted Publisher 需与此 workflow 同名同环境（一次性配置）。
+
 ## 进一步阅读
 
 - `README.md` / `README-en.md`：项目简介、功能清单、权限模式详解、安装步骤。
